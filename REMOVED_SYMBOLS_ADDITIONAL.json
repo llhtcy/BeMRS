@@ -1,0 +1,14 @@
+[
+  "bemrs/core/engine.py:_uses_kmeans_region_builder",
+  "bemrs/core/engine.py:_kmeans_score_gap_enabled",
+  "bemrs/core/engine.py:_uses_score_quantile_region_builder",
+  "bemrs/core/engine.py:_uses_nonseparated_region_builder",
+  "bemrs/core/engine.py:_uses_joint_region_rebuild_builder",
+  "bemrs/core/engine.py:_rank_unused_trust_region_centers",
+  "bemrs/core/engine.py:_score_quantile_region_layout",
+  "bemrs/core/engine.py:_rebuild_score_quantile_regions",
+  "bemrs/predictor.py:rank_candidates",
+  "bemrs/predictor.py:filter_population",
+  "bemrs/predictor.py:_weighted_layer_sample",
+  "bemrs/predictor.py:_score_sort_key"
+]

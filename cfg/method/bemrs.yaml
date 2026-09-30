@@ -1,0 +1,78 @@
+algorithm: bemrs
+name: bemrs
+budget:
+  real_evaluations: ${max_fe}
+initialization:
+  evaluations: 10
+  max_generation_attempts: 20
+  use_prompt_seed: true
+  min_distinct_scores: 5
+  prompt_seed: ${seed}
+generation:
+  llm_batch: true
+  llm_max_workers: 6
+cold_start:
+  successful_eval_limit: 30
+  reference_window: 100
+  visualize: true
+behavior_explore:
+  enabled: true
+  rounds: 2
+  candidates: 20
+  eval_batch_size: 10
+behavior_filter:
+  enabled: true
+  start_with_predictor: true
+  atol: 1.0e-06
+  rtol: 0.0001
+  xgb_rescue:
+    enabled: true
+novelty_selection:
+  enabled: true
+predictor:
+  enabled: true
+  start_successful_evals: 50
+  min_samples: 50
+  max_samples: 200
+  seed: ${seed}
+  retrain_interval: 10
+  xgboost:
+    n_estimators: 250
+    max_depth: 3
+    learning_rate: 0.03
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 2.0
+    min_child_weight: 2.0
+    tree_method: hist
+    n_jobs: 1
+region:
+  enabled: true
+  warmup_evals: 30
+  count: 3
+  archive_target_distinct: 24
+  candidates_per_region: 8
+  relative_improvement: 0.0001
+  rebuild_tolerance: 5
+  preserve_global_best_anchor: true
+  bx_parent_selection:
+    tau_bx: 1.5
+  scale_window: 100
+  eval_batch_size: 5
+  seed: ${seed}
+behavior_space:
+  instance_pooling: mean
+visualization:
+  enabled: true
+  method: pca
+  pca_freeze_samples: 30
+logging:
+  timing_csv: bemrs_timing_records.csv
+  lineage_jsonl: null
+  lineage_edges_csv: null
+  lineage_save_features: true
+  selection_top: 10
+safety:
+  max_stalled_generations: 100
+  generated_algorithm_multiplier: 10

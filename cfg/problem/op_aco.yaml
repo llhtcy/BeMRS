@@ -1,0 +1,30 @@
+problem_name: op_aco
+problem_type: aco
+obj_type: max
+problem_size: 50
+behavior:
+  problem_size: 50
+  dataset: problems/op_aco/dataset/train50_dataset.npz
+  matrices: 5
+  stage_ratios:
+  - 0.2
+  - 0.5
+  - 0.8
+  probes_per_stage: 4
+  seed: ${seed}
+  batch_size: 32
+  heuristic_timeout: 0.5
+  encode_timeout: 5
+  feature_group: mean
+operators:
+  expand_parent_counts:
+  - 1
+  - 2
+  explore_parent_counts:
+  - 1
+  - 2
+func_name: heuristics
+description: Solving Orienteering Problem (OP) via stochastic solution sampling following
+  "heuristics". OP is an optimization problem where the goal is to find the most rewarding
+  route, starting from a depot, visiting a subset of nodes with associated prizes,
+  and returning to the depot within a specified travel distance.

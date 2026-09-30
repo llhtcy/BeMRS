@@ -1,0 +1,3 @@
+def heuristics_v1(prize: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    heuristics_matrix = prize / np.sum(weight, axis=1)
+    return heuristics_matrix

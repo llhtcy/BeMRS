@@ -1,0 +1,30 @@
+problem_name: tsp_constructive
+problem_type: constructive
+obj_type: min
+problem_size: 200
+behavior:
+  problem_size: 50
+  dataset: problems/tsp_constructive/dataset/train50_dataset.npy
+  matrices: 6
+  probes: 8
+  stage_ratios:
+  - 0.8
+  - 0.5
+  - 0.2
+  seed: ${seed}
+  batch_size: 32
+  probe_timeout: 0.05
+  encode_timeout: 5.0
+operators:
+  expand_parent_counts:
+  - 1
+  - 2
+  - 4
+  explore_parent_counts:
+  - 1
+  - 2
+  - 4
+func_name: select_next_node
+description: Solving Traveling Salesman Problem (TSP) with constructive heuristics.
+  TSP requires finding the shortest path that visits all given nodes and returns to
+  the starting node.

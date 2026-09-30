@@ -1,0 +1,25 @@
+problem_name: tsp_gls
+problem_type: gls
+obj_type: min
+problem_size: 200
+func_name: heuristics
+description: Solving Traveling Salesman Problem (TSP) via guided local search. TSP
+  requires finding the shortest path that visits all given nodes and returns to the
+  starting node.
+behavior:
+  dataset: problems/tsp_gls/dataset/train200_dataset.npy
+  matrices: 10
+  problem_size: 200
+  probes_per_state: 8
+  representation: compact_preference12
+  seed: ${seed}
+  heuristic_timeout: 0.25
+  encode_timeout: 5.0
+  batch_size: 16
+operators:
+  expand_parent_counts:
+  - 1
+  - 2
+  explore_parent_counts:
+  - 1
+  - 2

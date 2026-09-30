@@ -1,0 +1,37 @@
+problem_name: cvrp_aco
+problem_type: aco
+obj_type: min
+problem_size: 50
+behavior:
+  problem_size: 50
+  dataset: problems/cvrp_aco/dataset/train50_dataset.npy
+  matrices: 8
+  capacity: 50.0
+  stage_ratios:
+  - 0.8
+  - 0.5
+  - 0.2
+  load_ratios:
+  - 0.1
+  - 0.5
+  - 0.85
+  probes_per_cell: 4
+  seed: ${seed}
+  batch_size: 32
+  heuristic_timeout: 0.5
+  encode_timeout: 5.0
+  feature_group: mean
+operators:
+  expand_parent_counts:
+  - 1
+  - 2
+  explore_parent_counts:
+  - 1
+  - 2
+func_name: heuristics
+description: Solving Capacitated Vehicle Routing Problem (CVRP) via stochastic solution
+  sampling. CVRP requires finding the shortest path that visits all given nodes and
+  returns to the starting node. Each node has a demand and each vehicle has a capacity.
+  The total demand of the nodes visited by a vehicle cannot exceed the vehicle capacity.
+  When the total demand exceeds the vehicle capacity, the vehicle must return to the
+  starting node.

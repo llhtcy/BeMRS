@@ -1,0 +1,23 @@
+[
+  "bemrs/core/engine.py:code2file",
+  "bemrs/core/engine.py:_parse_float_list",
+  "bemrs/core/engine.py:_trust_region_model_signature",
+  "bemrs/core/engine.py:_new_local_behavior_predictor",
+  "bemrs/core/engine.py:_diversity_filter_candidates",
+  "bemrs/core/engine.py:_normalize_minimize_scores",
+  "bemrs/predictor.py:add_samples",
+  "bemrs/predictor.py:get_code_score_archive",
+  "bemrs/predictor.py:get_sample_num",
+  "bemrs/predictor.py:_dynamic_beta",
+  "bemrs/predictor.py:should_predict",
+  "bemrs/predictor.py:get_stats",
+  "bemrs/predictor.py:reset",
+  "bemrs/predictor.py:_save_behavior_landscape_3d",
+  "bemrs/predictor.py:_save_feature_plot",
+  "bemrs/core/engine.py:_pairwise_cosine_distances",
+  "bemrs/predictor.py:dynamic_beta",
+  "bemrs/predictor.py:_ensure_3d_projection",
+  "bemrs/predictor.py:_project_behavior_trust_space",
+  "bemrs/predictor.py:_estimate_diagnostic_turbo_regions",
+  "bemrs/predictor.py:_local_performance_surface"
+]

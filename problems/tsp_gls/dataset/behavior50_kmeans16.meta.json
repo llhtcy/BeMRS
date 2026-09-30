@@ -1,0 +1,12 @@
+{
+  "name": "behavior50_kmeans16",
+  "task": "tsp_gls",
+  "shape": [16, 50, 2],
+  "dtype": "float64",
+  "pool_size": 1000,
+  "selection": "KMeans representative nearest each of 16 centers",
+  "pool_seed": 20260822,
+  "source_indices": [854, 374, 104, 916, 785, 377, 582, 855, 551, 209, 248, 152, 256, 879, 9, 809],
+  "sha256": "aeea4534e3ac10cb74fb2d142de1a103f58b86008cfc7a8c5984474fc8bcbcae",
+  "provenance": "behavior_redundancy_validation_data/tsp_gls/eoh/eoh_tsp_gls_2026-08-21_10-39-47/_analysis/kmeans_tsp50_16/selected_instances.npz:kmeans_a"
+}

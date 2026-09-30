@@ -1,0 +1,17 @@
+defaults:
+  - method: bemrs
+  - problem: op_aco
+  - _self_
+seed: 1111
+model: openai/qwen3-8b
+api_key: ${oc.env:OPENAI_API_KEY,""}
+base_url: ${oc.env:OPENAI_BASE_URL,https://api.openai.com/v1}
+pop_size: 10
+max_fe: 210
+timeout: 100
+check: false
+hydra:
+  run:
+    dir: runs/${problem.problem_name}/seed_${seed}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: true

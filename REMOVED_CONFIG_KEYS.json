@@ -1,0 +1,9 @@
+[
+  "predictor.model",
+  "behavior_space.full_dimensional",
+  "trust_region.center_score_separation",
+  "trust_region.kmeans_require_score_gap",
+  "trust_region.region_builder",
+  "trust_region.bx_parent_selection.strategy",
+  "trust_region.evaluation_allocation.strategy"
+]

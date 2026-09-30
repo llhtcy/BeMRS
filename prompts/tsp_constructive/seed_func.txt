@@ -1,0 +1,6 @@
+def select_next_node_v1(current_node: int, destination_node: int, unvisited_nodes: set, distance_matrix: np.ndarray) -> int:
+    """Select the next node to visit from the unvisited nodes."""
+    
+    next_node = min(unvisited_nodes, key=lambda node: distance_matrix[current_node][node])
+
+    return next_node
