@@ -167,14 +167,13 @@ class BeMRS:
                 if not interface_ec.should_run_behavior_exploration() and hasattr(interface_ec, 'rebuild_regions_after_behavior_exploration'):
                     interface_ec.rebuild_regions_after_behavior_exploration()
             else:
-                if hasattr(interface_ec, 'prepare_region_operator_schedule'):
-                    interface_ec.prepare_region_operator_schedule(self.operators)
-                for i in range(n_op):
+                use_mixed = interface_ec.should_use_regions() and interface_ec._initialize_regions()
+                round_operators = ['mixed'] if use_mixed else self.operators
+                for i, op in enumerate(round_operators):
                     if interface_ec.is_real_eval_budget_exhausted():
                         break
-                    op = self.operators[i]
-                    print(f' OP: {op}, [{i + 1} / {n_op}] ', end='|')
-                    op_w = self.operator_weights[i]
+                    print(f' OP: {op}, [{i + 1} / {len(round_operators)}] ', end='|')
+                    op_w = 1 if use_mixed else self.operator_weights[i]
                     if np.random.rand() >= op_w:
                         continue
                     parents, offsprings = interface_ec.get_algorithm(population, op)

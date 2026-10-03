@@ -56,7 +56,7 @@ class RuntimeTests(unittest.TestCase):
             os.chdir(tmp)
             try:
                 with initialize_config_dir(version_base=None,config_dir=str(ROOT/'cfg')):
-                    cfg=compose(config_name='config',overrides=['max_fe=65','method.visualization.enabled=false','method.cold_start.visualize=false'])
+                    cfg=compose(config_name='config',overrides=['max_fe=65','method.visualization.enabled=false','method.cold_start.visualize=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
                 workspace=isolated_workspace(Path(tmp))
                 with patch('bemrs.core.engine.build_behavior_embedder',return_value=Encoder()),patch.object(InterfaceAPI,'get_responses',responses),patch.object(Problem,'batch_evaluate',evaluate):
                     code,path=BeMRS(cfg,workspace).evolve()
@@ -67,6 +67,29 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(len(successful),65)
                 self.assertTrue(any(r['pipeline'].get('behavior_novelty_slot') for r in rows))
                 self.assertTrue(any(r['pipeline'].get('selection_method') == 'advantage_region_xgboost_direct' for r in rows))
+                from collections import defaultdict
+                import math
+                mixed = defaultdict(list)
+                for row in rows:
+                    if row['pipeline'].get('generation_kind'):
+                        mixed[row['generation']].append(row)
+                self.assertTrue(mixed)
+                remaining = 65 - 30  # initialization and two BE rounds unchanged
+                selected_counts = []
+                for generation in sorted(mixed):
+                    batch = mixed[generation]
+                    self.assertEqual({r['operator'] for r in batch}, {'bx','br'})
+                    self.assertTrue({r['pipeline']['generation_kind'] for r in batch}
+                                    <= {'single_bx','single_br','intra_bx','intra_br'})
+                    selected = [r for r in batch if r['pipeline']['selected_for_evaluation']]
+                    self.assertEqual(len(selected), min(math.ceil(len(batch)*.1), remaining))
+                    self.assertEqual(len({r['child']['code'] for r in selected}),len(selected))
+                    novelty = [r for r in selected if r['pipeline'].get('behavior_novelty_slot')]
+                    self.assertEqual(len(novelty), int(len(selected)>=2 and len(batch)>len(selected)))
+                    remaining -= len(selected)
+                    selected_counts.append(len(selected))
+                self.assertEqual(remaining,0)
+                self.assertGreater(max(selected_counts),5)  # no hidden fixed-five cap
             finally:os.chdir(old)
 
 if __name__=='__main__':unittest.main()

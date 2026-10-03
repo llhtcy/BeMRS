@@ -11,6 +11,7 @@ initialization:
 generation:
   llm_batch: true
   llm_max_workers: 6
+  evaluation_ratio: 0.2
 cold_start:
   successful_eval_limit: 30
   reference_window: 100
@@ -51,15 +52,15 @@ region:
   enabled: true
   warmup_evals: 30
   count: 3
-  archive_target_distinct: 24
-  candidates_per_region: 8
+  archive_target_distinct: 12
+  # Candidate count follows the frozen parent coverage plan.
   relative_improvement: 0.0001
   rebuild_tolerance: 5
   preserve_global_best_anchor: true
   bx_parent_selection:
     tau_bx: 1.5
   scale_window: 100
-  eval_batch_size: 5
+  # Formal-search evaluation slots use generation.evaluation_ratio.
   seed: ${seed}
 behavior_space:
   instance_pooling: mean

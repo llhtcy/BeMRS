@@ -119,7 +119,9 @@ class SearchEngine:
         self.bx_parent_selection_strategy = 'rank_softmax_maxmin'
         self.bx_parent_selection_tau = max(1e-12, float(os.environ.get('BEMRS_BX_PARENT_SELECTION_TAU', 1.5)))
         self.region_scale_window = max(4, int(os.environ.get('BEMRS_REGION_SCALE_WINDOW', 100)))
-        self.region_eval_batch_size = max(1, int(os.environ.get('BEMRS_REGION_EVAL_BATCH_SIZE', 5)))
+        from bemrs.offspring_plan import evaluation_slots
+        self.evaluation_ratio = float(os.environ.get('BEMRS_EVALUATION_RATIO', '0.1'))
+        evaluation_slots(0, self.evaluation_ratio, 0)
         self.regional_allocated_count = {}
         self._regional_allocation_cursor = None
         self.region_seed = int(os.environ.get('BEMRS_REGION_SEED', os.environ.get('BEMRS_PREDICTOR_SEED', 42)))
@@ -163,10 +165,10 @@ class SearchEngine:
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
         logging.info('[ColdStartConfig] successful_eval_limit=%s reference_window=%s visualize=%s llm_batch=%s llm_workers=%s', self.cold_start_diversity_evals, self.cold_start_reference_window, self.cold_start_visualize, self.llm_batch_generation_enabled, self.llm_max_workers)
         logging.info('[BehaviorExploreConfig] enabled=%s rounds=%s candidates_per_round=%s eval_batch_per_round=%s parent_counts=%s completion=fixed_rounds_no_refill', self.behavior_explore_enabled, self.behavior_explore_rounds, self.behavior_explore_candidates, self.behavior_explore_eval_batch_size, self.behavior_explore_parent_counts)
-        logging.info('[BehaviorOperatorConfig] bx_parent_counts=%s br_parent_count=2 parent_sets=unique parents_within_set=unique bx_region_selection=%s bx_tau=%s', self.behavior_expand_parent_counts, 'rank_softmax_maxmin', self.bx_parent_selection_tau)
-        logging.info('[RegionConfig] regions=%s archive_target_distinct=%s candidates_per_region=%s eval_batch=%s warmup=%s rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.region_candidates_per_region, self.region_eval_batch_size, self.region_warmup, self.region_rebuild_tolerance)
+        logging.info('[BehaviorOperatorConfig] regional_parents=single_and_pair BX=farthest BR=nearest fallback_bx_parent_counts=%s fallback_tau=%s', self.behavior_expand_parent_counts, self.bx_parent_selection_tau)
+        logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s warmup=%s rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_warmup, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
-        logging.info('[RegionOperatorConfig] policy=fixed_cycle cycle=%s ratio=bx:br=3:1 scale_dependent=False all_regions_share_operator=True', _FIXED_OPERATOR_CYCLE)
+        logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=single_bx,single_br,intra_bx,intra_br,inter_bx dedupe=operator_and_ordered_codes')
 
     def set_timing_output(self, output_path):
         self.run_output_path = output_path
@@ -538,6 +540,7 @@ class SearchEngine:
                 continue
             record['child'].update({'algorithm_id': offspring.get('algorithm_id'), 'algorithm': offspring.get('algorithm'), 'code': offspring.get('code'), 'objective': self._finite_or_none(offspring.get('objective')), 'generation_parent_scope': offspring.get('generation_parent_scope'), 'region_source_id': offspring.get('region_source_id'), 'region_membership_id': offspring.get('region_membership_id'), 'region_allocation_id': offspring.get('region_allocation_id')})
             record['pipeline'] = {'status': offspring.get('lineage_status', 'generated'), 'generation_attempts': offspring.get('generation_attempts'), 'generation_parent_scope': offspring.get('generation_parent_scope'), 'region_source_id': offspring.get('region_source_id'), 'region_membership_id': offspring.get('region_membership_id'), 'region_allocation_id': offspring.get('region_allocation_id'), 'behavior_feature_failed': bool(offspring.get('behavior_feature_failed', False)), 'skip_real_eval': bool(offspring.get('skip_real_eval', False)), 'skip_reason': offspring.get('skip_reason'), 'selected_by_predictor': offspring.get('selected_by_predictor'), 'selected_for_evaluation': offspring.get('selected_for_evaluation'), 'initialization_context': offspring.get('initialization_context'), 'duplicate_of_algorithm_id': offspring.get('duplicate_of_algorithm_id'), 'behavior_duplicate_scope': offspring.get('behavior_duplicate_scope'), 'selection_method': offspring.get('selection_method'), 'behavior_novelty_slot': bool(offspring.get('behavior_novelty_slot', False)), 'behavior_archive_novelty_distance': self._finite_or_none(offspring.get('behavior_archive_novelty_distance'))}
+            record['pipeline']['generation_kind'] = offspring.get('generation_kind')
             record['prediction'] = {'prediction': self._finite_or_none(offspring.get('behavior_pred_score'))}
             record['evaluation'] = {'attempted': bool(offspring.get('real_eval_attempted', False)), 'success': bool(offspring.get('real_eval_success', False)), 'shared': bool(offspring.get('eval_shared', False)), 'status': offspring.get('evaluation_status')}
             if self.lineage_save_features:
@@ -2747,6 +2750,45 @@ class SearchEngine:
         offspring['generation_attempts'] = int(generation_attempts)
         return (parents, offspring)
 
+    def _generate_mixed_plan(self, plan):
+        """Generate frozen parent plans, keeping actual operators in lineage.
+
+        BX and BR requests share one downstream filtering/evaluation batch.
+        Never refill a failed request with another parent pair.
+        """
+        candidates = []
+        for operator in ('bx', 'br'):
+            rows = [row for row in plan if row['operator'] == operator]
+            if not rows:
+                continue
+            if not self.llm_batch_generation_enabled:
+                for row in rows:
+                    candidate = self._get_offspring_from_region_parents(
+                        row['parents'], operator, row['region_id'])
+                    candidate[1]['generation_kind'] = row['kind']
+                    candidates.append(candidate)
+                continue
+            self._claim_generated_algorithm_slots(len(rows), context='mixed_' + operator)
+            generated = self.evol.generate_batch(operator, [r['parents'] for r in rows])
+            if len(generated) != len(rows):
+                raise ValueError('Mixed generation results must align with parent plan')
+            for row, result in zip(rows, generated):
+                offspring = dict(algorithm=result.get('algorithm'), code=result.get('code'),
+                                 objective=None, other_inf=None, operator=operator,
+                                 generation_parent_scope='region', region_source_id=row['region_id'],
+                                 generation_kind=row['kind'], region_operator_mode='mixed_parent_coverage',
+                                 generation_attempts=int(result.get('llm_attempts', 1)),
+                                 _lineage_prompt=result.get('prompt'),
+                                 _lineage_response=result.get('response'),
+                                 _lineage_llm_attempts=result.get('llm_attempts', 1))
+                if not offspring['code']:
+                    offspring.update(behavior_feature_failed=True, skip_real_eval=True,
+                                     skip_reason='llm_response_unparsable',
+                                     lineage_status='llm_response_unparsable')
+                self._register_lineage_event(row['parents'], offspring, operator)
+                candidates.append((row['parents'], offspring))
+        return candidates
+
     def get_algorithm(self, pop, operator):
         self._last_requested_candidate_count = 0
         if self.is_real_eval_budget_exhausted():
@@ -2757,7 +2799,14 @@ class SearchEngine:
         predictor_has_enough_samples = self.surrogate_selection_enabled and self.get_successful_real_eval_count() >= self.surrogate_start_successful_evals and (self.behavior_predictor.get_sample_count() >= self.behavior_predictor.min_samples)
         cur_fe = self.get_successful_real_eval_count()
         behavior_explore_active = operator in BEHAVIOR_ESCAPE_OPERATORS and self.behavior_explore_enabled and self.should_run_behavior_exploration()
-        region_active = bool(operator in STANDARD_BEHAVIOR_OPERATORS and self.should_use_regions() and self._initialize_regions())
+        mixed_round = operator == 'mixed'
+        region_active = bool((mixed_round or operator in STANDARD_BEHAVIOR_OPERATORS) and self.should_use_regions() and self._initialize_regions())
+        mixed_plan = None
+        if mixed_round:
+            if not region_active:
+                raise ValueError('Mixed regional generation requires initialized regions')
+            from bemrs.offspring_plan import build_parent_plan
+            mixed_plan = build_parent_plan(self._region_parent_pools(pop), self._canonical_code)
         self._bx_use_inter_region_this_round = False
         cold_start_active = behavior_explore_active
         n_generate = self.pop_size
@@ -2768,6 +2817,13 @@ class SearchEngine:
             n_generate = self.behavior_explore_candidates
             round_info = self.get_behavior_exploration_round()
             logging.info('[BehaviorExploreGeneration] round=%s/%s generate=%s eval_batch=%s successful_evals=%s refill=disabled', round_info[0] if round_info else 0, round_info[1] if round_info else self.behavior_explore_rounds, n_generate, self.behavior_explore_eval_batch_size, cur_fe)
+        elif mixed_round:
+            n_generate = len(mixed_plan)
+            regional_generate_count = n_generate
+            region_scheduled_ids = {int(s['region_id']) for s in self._region_states}
+            logging.info('[MixedParentPlan] total=%s counts=%s ordered_pairs=True', n_generate,
+                         {kind: sum(r['kind'] == kind for r in mixed_plan) for kind in
+                          ('single_bx', 'single_br', 'intra_bx', 'intra_br', 'inter_bx')})
         elif region_active:
             scheduled_region_ids = self._scheduled_region_ids(operator)
             eligible_states = [state for state in self._region_states if scheduled_region_ids is None or int(state['region_id']) in scheduled_region_ids]
@@ -2800,7 +2856,10 @@ class SearchEngine:
             return ([], [])
         generation_start = time.perf_counter()
         regional_offspring = []
-        if self.llm_batch_generation_enabled and n_generate > 1:
+        if mixed_round:
+            offspring_list = self._generate_mixed_plan(mixed_plan[:n_generate])
+            regional_offspring = list(offspring_list)
+        elif self.llm_batch_generation_enabled and n_generate > 1:
             logging.info('[LLMBatch] operator=%s offspring=%s workers=%s regional=%s', operator, n_generate, min(self.llm_max_workers, n_generate), regional_generate_count)
             if region_active:
                 try:
@@ -2814,7 +2873,7 @@ class SearchEngine:
                 except Exception as err:
                     logging.warning('[LLMBatch] batch generation failed for operator=%s; fall back to serial generation: %s', operator, err)
                     offspring_list = []
-        if region_active:
+        if region_active and not mixed_round:
             missing_regional = max(0, regional_generate_count - len(regional_offspring))
             if missing_regional:
                 logging.warning('[RegionParents] using serial generation for %s missing regional candidates', missing_regional)
@@ -2822,7 +2881,7 @@ class SearchEngine:
                 regional_offspring.extend((self._get_offspring_from_region_parents(row['parents'], operator, row['region_id']) for row in region_rows))
             offspring_list = list(regional_offspring)
             logging.info('[RegionalCandidatePool] operator=%s regional=%s real_eval_top_k=unchanged', operator, len(regional_offspring))
-        elif not offspring_list:
+        elif not mixed_round and not offspring_list:
             for _ in range(n_generate):
                 print(operator)
                 offspring_list.append(self.get_offspring(pop, operator))
@@ -2847,6 +2906,7 @@ class SearchEngine:
         offspring_list = [cand for cand in offspring_list if not self._candidate_to_offspring(cand).get('skip_real_eval') and (not self._candidate_to_offspring(cand).get('behavior_feature_failed'))]
         if skipped_candidates:
             logging.info('[CandidateSkip] skipped %s behavior-timeout candidates before behavior-region allocation', len(skipped_candidates))
+        ratio_candidate_count = len(offspring_list)
         offspring_list, behavior_duplicate_candidates = self._filter_candidates_by_raw_behavior(offspring_list)
         n_after_feature_filter = len(offspring_list)
         if region_active:
@@ -2862,7 +2922,13 @@ class SearchEngine:
         n_selected = len(offspring_list)
         predictor_selection_time = 0.0
         remaining_budget = self.get_remaining_real_evals()
-        fallback_eval_count = min(self.pop_size, len(offspring_list), remaining_budget)
+        from bemrs.offspring_plan import evaluation_slots
+        ratio_slots = evaluation_slots(ratio_candidate_count, self.evaluation_ratio,
+                                       remaining_budget, len(offspring_list))
+        fallback_eval_count = ratio_slots
+        if not cold_start_active:
+            logging.info('[EvaluationRatio] ratio=%s denominator=valid_unique_fresh_before_behavior_filter N=%s available=%s B_total=%s remaining=%s',
+                         self.evaluation_ratio, ratio_candidate_count, len(offspring_list), ratio_slots, remaining_budget)
         if cold_start_active:
             diversity_eval_count = min(self.behavior_explore_eval_batch_size, len(offspring_list), remaining_budget)
             diversity_start = time.perf_counter()
@@ -2876,7 +2942,7 @@ class SearchEngine:
             n_selected = len(offspring_list)
             logging.info('[ColdStartDiversity] operator=%s generated=%s unique_pool=%s selected=%s fixed_round=%s/%s refill=disabled', operator, n_generate, n_unique_before_selection, n_selected, self._behavior_explore_rounds_completed + 1, self.behavior_explore_rounds)
         elif region_active:
-            top_k = min(len(offspring_list), remaining_budget, self.region_eval_batch_size)
+            top_k = ratio_slots
             allocation_start = time.perf_counter()
             reserve_novelty_slot = bool(self.behavior_novelty_slot_enabled and top_k >= 2 and (len(offspring_list) > top_k))
             surrogate_top_k = top_k - 1 if reserve_novelty_slot else top_k
@@ -2904,7 +2970,7 @@ class SearchEngine:
                 stage_label = 'BeMRSSelection'
                 logging.info('[%s] total_slots=%s predictor_slots=%s novelty_slots=%s selected=%s', stage_label, top_k, len(surrogate_selected_candidates), 1 if novelty_candidate is not None else 0, n_selected)
         elif predictor_has_enough_samples:
-            top_k = min(len(offspring_list), remaining_budget, self.region_eval_batch_size)
+            top_k = ratio_slots
             logging.info('[Predictor] cur_fe=%s candidate_pool=%s unique_pool=%s top_k=%s selection=predicted_score', cur_fe, n_after_feature_filter, len(offspring_list), top_k)
             selected_candidates, ranked_candidates = self._rank_by_ensemble(candidates=offspring_list, cur_fe=cur_fe, top_k=top_k, minimize=True)
             selected_ids = {id(cand) for cand in selected_candidates}

@@ -36,14 +36,14 @@ python main.py problem=tsp_constructive seed=1111
 |---|---|
 | OP / MKP / CVRP 特征 | Mean 6D / 7D / 7D |
 | TSP-GLS / TSP 构造特征 | compact12 / 原有72D |
-| 种群 / 档案 | 10 / 24个不同目标值，保留并列 |
-| 区域 / 每区域生成名额 | 3 / 8 |
+| 种群 / 档案 | 10 / 12个不同目标值，保留并列 |
+| 区域 / 子代生成 | 3 / 每区域父代数决定 BX、BR 数量，同轮混合筛选 |
 | 总成功真实评估预算 | 210（包含固定seed评估） |
-| 每批真实评估 | 最多5，满足条件时4区域+1novelty |
+| 正式搜索真实评估 | 有效去重新候选的20%，向上取整；novelty从中预留1个 |
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
 | XGBoost | 起始50样本，最近最多200样本，新增10样本重训 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
-| BX/BR | 当前服务器实现，包括跨区域top-k替换/重复组合回退 |
+| BX/BR | 区域内父代覆盖：BX配最远邻居，BR固定区域最优锚点 |
 
 常用覆盖：
 
@@ -69,7 +69,8 @@ python evaluate.py --problem op_aco --code runs/你的运行/best_algorithm.py -
 `check=true` 只构造模型/探针并提取固定seed特征，不调用LLM，不运行真实目标评估。
 单元测试使用模拟LLM、模拟行为向量和模拟目标值，真实XGBoost训练仍运行。
 区域参数统一为`method.region.*`，日志使用`Region`/`R1`等名称。
-已移除旧半径扩缩机制；BX/BR固定轮换和停滞后的KMeans重聚类保留，见`REGION_CLEANUP.md`。
+已移除旧半径扩缩机制；正式搜索不再使用BX/BR固定轮换，停滞后的KMeans重聚类保留。
+本次生成规则、比例分母与边界条件见 `MIXED_GENERATION.md`。
 `evaluate.py` 是真实评估，只运行用户提供的算法。已有非空输出目录拒绝覆盖。
 验证集必须实际存在，缺失时不静默使用训练集。搜索结束不自动运行全部验证规模，避免隐藏额外成本。
 
