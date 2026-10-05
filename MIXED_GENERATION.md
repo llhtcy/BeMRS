@@ -12,8 +12,12 @@ use. BX cycles the first parent by quality and samples additional parents from
 the distance ranking with the existing seeded distribution. BR keeps the best
 regional anchor and samples its second parent toward nearby behavior. A
 singleton can produce one single-parent BX; BR keeps its existing two-parent
-requirement and skips a singleton. BX alternates its existing intra-region and
-cross-region mode on successive rounds. Each operator uses its own no-repeat
+requirement and skips a singleton. Every round includes both intra-region and
+cross-region BX. Each region splits its n_r BX slots equally; an odd extra slot
+alternates between the two modes on successive rounds. With only one active
+region all BX slots are intra-region. Unfilled parent-combination slots transfer
+to the other mode without exceeding n_r. Both BX modes share duplicate keys.
+Each operator uses its own no-repeat
 parent signatures, and BX and BR are generated into one candidate pool.
 
 Deduplication is per round and per operator, using an unordered canonical code
@@ -42,11 +46,11 @@ selector, excluding regional selections. The rest use the existing annealed
 regional allocator and regional predictor ranking. No extra novelty evaluation
 is added beyond B. The global successful-evaluation limit remains unchanged.
 
-The default archive target is 12, population 10, regions 3, total successful
+The default archive target is 24 (matching the current server configuration), population 10, regions 3, total successful
 evaluation limit 210. Old candidates_per_region and eval_batch_size are removed
 from the default regional configuration. The fixed operator cycle is no longer
 called by formal search; legacy helper paths remain for this first revision.
-Fallback distance-rank parameters do not participate in the new regional plan.
+The existing distance-rank parent-selection parameters remain in use.
 
 Logs: MixedParentPlan (per-region BX/BR counts), EvaluationRatio (N, ratio,
 available, B), RegionalBatchBudget (novelty/region split). Lineage keeps actual

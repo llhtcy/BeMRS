@@ -52,7 +52,7 @@ region:
   enabled: true
   warmup_evals: 30
   count: 3
-  archive_target_distinct: 12
+  archive_target_distinct: 24
   # Candidate count follows the frozen parent coverage plan.
   relative_improvement: 0.0001
   rebuild_tolerance: 5

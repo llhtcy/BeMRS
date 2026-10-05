@@ -40,14 +40,40 @@ class OffspringPlanTests(unittest.TestCase):
                         self.assertEqual(len(row['parents']),2)
                         pool=engine._region_parent_pools.return_value[row['region_id']]
                         self.assertEqual(row['parents'][0],pool[0]['parent'])
-                if rows:
+                if sum(n > 0 for n in sizes) == 1:
                     self.assertEqual({r['kind'] for r in rows if r['operator']=='bx'},
-                                     {'intra_bx' if turn==0 else 'inter_bx'})
+                                     {'intra_bx'})
             self.assertEqual(engine._region_parent_pools.call_count,2)
 
     def test_balanced_local_counts(self):
         rows=self.engine([4,4,4])._build_mixed_parent_plan([])
         self.assertEqual(Counter(r['operator'] for r in rows),dict(bx=12,br=9))
+        self.assertEqual(Counter(r['kind'] for r in rows),
+                         dict(intra_bx=6, inter_bx=6, intra_br=9))
+
+    def test_odd_split_rotates(self):
+        engine = self.engine([5,5,5])
+        for turn in range(2):
+            rows = engine._build_mixed_parent_plan([])
+            for rid in range(3):
+                self.assertEqual(sum(r['region_id']==rid and r['kind']=='intra_bx'
+                                     for r in rows), 3 if turn == 0 else 2)
+                self.assertEqual(sum(r['region_id']==rid and r['kind']=='inter_bx'
+                                     for r in rows), 2 if turn == 0 else 3)
+
+    def test_unused_slots_transfer(self):
+        for unavailable, expected in (('intra_bx','inter_bx'), ('inter_bx','intra_bx')):
+            engine = self.engine([4,4,4])
+            original = engine._build_region_parent_batches
+            def build(pop, op, size, pools=None, quotas=None):
+                mode = 'inter_bx' if engine._bx_use_inter_region_this_round else 'intra_bx'
+                if op == 'bx' and mode == unavailable:
+                    return []
+                return original(pop, op, size, pools=pools, quotas=quotas)
+            engine._build_region_parent_batches = build
+            rows = engine._build_mixed_parent_plan([])
+            self.assertEqual(sum(r['operator']=='bx' for r in rows), 12)
+            self.assertEqual({r['kind'] for r in rows if r['operator']=='bx'}, {expected})
 
     def test_rng_is_reproducible_and_used(self):
         def signature(seed):

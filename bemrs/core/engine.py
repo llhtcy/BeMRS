@@ -2758,23 +2758,50 @@ class SearchEngine:
         pools = self._region_parent_pools(pop)
         quotas = {rid: len(entries) for rid, entries in pools.items() if entries}
         bx_round = int(getattr(self, '_bx_region_round_count', 0))
-        self._bx_use_inter_region_this_round = bool(bx_round % 2)
         self._bx_region_round_count = bx_round + 1
         self._bx_inter_region_parent_count_cursor = 0
         rows = []
-        for operator in ('bx', 'br'):
-            # Combination uniqueness is scoped to each operator, as before.
-            self._active_parent_batch_signatures = set()
+        has_other_region = len(quotas) > 1
+        intra_quotas = {rid: (n // 2 + int(n % 2 and bx_round % 2 == 0))
+                        if has_other_region else n for rid, n in quotas.items()}
+        inter_quotas = {rid: n - intra_quotas[rid] for rid, n in quotas.items()}
+        self._active_parent_batch_signatures = set()
+
+        def add_bx(mode, requested):
+            requested = {rid: n for rid, n in requested.items() if n > 0}
+            if not requested:
+                return
+            self._bx_use_inter_region_this_round = mode == 'inter_bx'
             batches = self._build_region_parent_batches(
-                pop, operator, sum(quotas.values()), pools=pools, quotas=quotas)
+                pop, 'bx', sum(requested.values()), pools=pools, quotas=requested)
             for row in batches:
-                row['operator'] = operator
-                row['kind'] = ('inter_bx' if self._bx_use_inter_region_this_round else 'intra_bx') if operator == 'bx' else 'intra_br'
+                row['operator'] = 'bx'
+                row['kind'] = mode
                 rows.append(row)
-        logging.info('[MixedParentQuotas] parent_counts=%s BX_mode=%s actual=%s', quotas,
-                     'inter' if self._bx_use_inter_region_this_round else 'intra',
-                     {rid: {op: sum(r['region_id'] == rid and r['operator'] == op for r in rows)
-                            for op in ('bx', 'br')} for rid in quotas})
+
+        add_bx('intra_bx', intra_quotas)
+        add_bx('inter_bx', inter_quotas)
+        # Transfer unfilled slots to the other mode, sharing BX duplicate keys.
+        for target, source, planned in (
+                ('inter_bx', 'intra_bx', intra_quotas),
+                ('intra_bx', 'inter_bx', inter_quotas)):
+            deficits = {rid: max(0, n - sum(r['region_id'] == rid and r['kind'] == source
+                                          for r in rows)) for rid, n in planned.items()}
+            remaining = {rid: min(deficits[rid], quotas[rid] - sum(
+                r['region_id'] == rid for r in rows)) for rid in quotas}
+            if target != 'inter_bx' or has_other_region:
+                add_bx(target, remaining)
+        self._bx_use_inter_region_this_round = False
+        self._active_parent_batch_signatures = set()
+        for row in self._build_region_parent_batches(
+                pop, 'br', sum(quotas.values()), pools=pools, quotas=quotas):
+            row['operator'] = 'br'
+            row['kind'] = 'intra_br'
+            rows.append(row)
+        logging.info('[MixedParentQuotas] parent_counts=%s intra_BX_quotas=%s inter_BX_quotas=%s actual=%s',
+                     quotas, intra_quotas, inter_quotas,
+                     {rid: {kind: sum(r['region_id'] == rid and r['kind'] == kind for r in rows)
+                            for kind in ('intra_bx', 'inter_bx', 'intra_br')} for rid in quotas})
         return rows
 
     def _generate_mixed_plan(self, plan):
