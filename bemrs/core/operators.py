@@ -48,7 +48,7 @@ class Evolution:
             previous_ideas = initialization_context.get('previous_ideas', [])
             previous_text = ''
             if previous_ideas:
-                previous_text = '\nPreviously generated descriptions, provided only to avoid duplication:\n- ' + '\n- '.join((str(idea) for idea in previous_ideas))
+                previous_text = '\nMost recent successfully evaluated algorithm ideas (at most 10), provided only to avoid duplication:\n- ' + '\n- '.join((str(idea) for idea in previous_ideas[-10:]))
             diversity_prompt = f'\nThis is initialization candidate No.{candidate_index}. Its purpose is to expand the initial algorithm population.\nBased only on the task specification, independently identify a useful core mechanism that is not yet represented. Do not assume or follow any predefined family of algorithms. The result must differ in its core decision logic from the previously generated ideas, not merely in variable names, constants, comments, or equivalent syntax.{previous_text}\n'
         prompt_content = self.prompt_task + '\n' + initialization_seed_prompt + diversity_prompt + 'First, describe your new algorithm and main steps in one sentence. The description must be inside a brace. Next, implement it in Python as a function named ' + self.prompt_func_name + '. This function should accept ' + str(len(self.prompt_func_inputs)) + ' input(s): ' + self.joined_inputs + '. The function should return ' + str(len(self.prompt_func_outputs)) + ' output(s): ' + self.joined_outputs + '. ' + self.prompt_inout_inf + ' ' + self.prompt_other_inf + '\n' + 'Do not give additional explanations.'
         return prompt_content

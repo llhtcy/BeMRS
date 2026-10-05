@@ -13,6 +13,32 @@ from bemrs import BeMRS
 from main import ROOT, isolated_workspace
 
 class RuntimeTests(unittest.TestCase):
+    def test_initialization_fixed_slots_and_successful_context(self):
+        from unittest.mock import Mock
+        engine = SearchEngine.__new__(SearchEngine)
+        engine.is_real_eval_budget_exhausted = Mock(return_value=False)
+        engine.get_remaining_generated_algorithm_slots = Mock(return_value=100)
+        rows = [dict(code=c, algorithm=idea, objective=None) for c, idea in
+                [('', 'empty'), ('bad', 'invalid'), ('ok', 'accepted'),
+                 ('ok', 'duplicate'), ('other', 'same_score')]]
+        engine.get_offspring = Mock(side_effect=[(None,r) for r in rows])
+        def attach(candidates):
+            off = candidates[0][1]
+            off['behavior_feature_failed'] = off['code'] == 'bad'
+        engine._attach_behavior_features = attach
+        def evaluate(candidates, **kwargs):
+            candidates[0][1]['objective'] = 1.0
+            return candidates
+        engine._evaluate_candidates = evaluate
+        engine._finalize_lineage_candidates = Mock()
+        engine._append_timing_record = Mock()
+        result = engine._sequential_initialization(5)
+        self.assertEqual([r['algorithm'] for r in result], ['accepted','same_score'])
+        self.assertEqual(engine.get_offspring.call_count, 5)
+        contexts = [call.kwargs['generation_context']['previous_ideas']
+                    for call in engine.get_offspring.call_args_list]
+        self.assertEqual(contexts, [[],[],[],['accepted'],['accepted']])
+
     def test_allocation(self):
         for k in (1,2,3,5):
             q,_,_=annealed_winner_take_most_quotas(list(range(k)),{r:8 for r in range(k)},4,210,210,{},None)
@@ -37,9 +63,12 @@ class RuntimeTests(unittest.TestCase):
         from bemrs.core.llm import InterfaceAPI
         from bemrs.problem_adapter import Problem
         counter=[0]
+        init_prompts=[]
         def responses(self,prompts,max_workers=None):
             result=[]
-            for _ in prompts:
+            for prompt in prompts:
+                if 'initialization candidate No.' in prompt:
+                    init_prompts.append(prompt)
                 counter[0]+=1
                 result.append('{Unique synthetic mechanism '+str(counter[0])+'}\n```python\nimport numpy as np\ndef heuristics_v2(prize, distance, maxlen):\n    return np.ones_like(distance) * '+str(counter[0])+'\n```')
             return result
@@ -65,6 +94,13 @@ class RuntimeTests(unittest.TestCase):
                 rows=[json.loads(l) for l in Path('algorithm_lineage.jsonl').read_text().splitlines()]
                 successful=[r for r in rows if r['evaluation']['success'] and not r['evaluation'].get('shared')]
                 self.assertEqual(len(successful),65)
+                self.assertFalse(any(r['operator']=='be' for r in rows))
+                self.assertEqual(sum(r['generation']==0 for r in successful),24)
+                self.assertEqual(len(init_prompts),23)
+                last_context=init_prompts[-1].split('Most recent successfully evaluated algorithm ideas')[1]
+                self.assertIn('Unique synthetic mechanism 22\n',last_context)
+                self.assertIn('Unique synthetic mechanism 13\n',last_context)
+                self.assertNotIn('Unique synthetic mechanism 12\n',last_context)
                 self.assertTrue(any(r['pipeline'].get('behavior_novelty_slot') for r in rows))
                 self.assertTrue(any(r['pipeline'].get('selection_method') == 'advantage_region_xgboost_direct' for r in rows))
                 from collections import defaultdict
@@ -74,7 +110,7 @@ class RuntimeTests(unittest.TestCase):
                     if row['pipeline'].get('generation_kind'):
                         mixed[row['generation']].append(row)
                 self.assertTrue(mixed)
-                remaining = 65 - 30  # initialization and two BE rounds unchanged
+                remaining = 65 - 24  # One archive-sized initialization, no BE.
                 selected_counts = []
                 for generation in sorted(mixed):
                     batch = mixed[generation]

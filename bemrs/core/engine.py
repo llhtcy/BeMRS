@@ -102,7 +102,6 @@ class SearchEngine:
         self._behavior_explore_parent_archive = []
         self._behavior_explore_parent_codes = set()
         self.region_enabled = os.environ.get('BEMRS_REGION_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
-        self.region_warmup = max(self.cold_start_diversity_evals, int(os.environ.get('BEMRS_REGION_WARMUP_EVALS', self.cold_start_diversity_evals)))
         self.region_count = max(1, int(os.environ.get('BEMRS_REGION_COUNT', 3)))
         archive_target_raw = os.environ.get('BEMRS_REGION_ARCHIVE_TARGET_DISTINCT')
         if archive_target_raw is None or str(archive_target_raw).strip() == '':
@@ -146,9 +145,9 @@ class SearchEngine:
         self.llm_batch_generation_enabled = os.environ.get('BEMRS_LLM_BATCH_GENERATION', '1').lower() not in {'0', 'false', 'no'}
         self.llm_max_workers = max(1, int(os.environ.get('BEMRS_LLM_MAX_WORKERS', 6)))
         self.run_output_path = None
-        self.init_unique_candidate_target = max(self.pop_size, int(os.environ.get('BEMRS_INIT_UNIQUE_CANDIDATES', self.pop_size)))
-        self.init_max_generation_attempts = max(self.init_unique_candidate_target, int(os.environ.get('BEMRS_INIT_MAX_GENERATION_ATTEMPTS', self.init_unique_candidate_target * 2)))
-        self.init_min_distinct_scores = max(1, int(os.environ.get('BEMRS_INIT_MIN_DISTINCT_SCORES', 5)))
+        self.init_unique_candidate_target = self.region_archive_target_distinct
+        self._initialization_complete = False
+        self.behavior_explore_enabled = False
         self.timing_csv_path = os.environ.get('BEMRS_TIMING_CSV', 'bemrs_timing_records.csv')
         self.lineage_jsonl_path = os.environ.get('BEMRS_LINEAGE_JSONL')
         self.lineage_edges_csv_path = os.environ.get('BEMRS_LINEAGE_EDGES_CSV')
@@ -161,12 +160,12 @@ class SearchEngine:
             warnings.filterwarnings('ignore')
         logging.info('[Predictor] global_xgboost_direct enabled=%s input_dim=%s start=%s window=%s retrain=%s', self.surrogate_selection_enabled, self.behavior_predictor.emb_dim, self.surrogate_start_successful_evals, self.behavior_predictor.max_samples, self.predictor_retrain_interval)
         logging.info('[RealEvalBudget] exact successful-evaluation target=%s', self.real_eval_budget)
-        logging.info('[InitConfig] unique_code_target=%s max_attempts=%s use_prompt_seed=%s min_distinct_scores_before_be=%s', self.init_unique_candidate_target, self.init_max_generation_attempts, self.use_prompt_seed, self.init_min_distinct_scores)
+        logging.info('[InitConfig] fixed_slots=%s seed_counts_as_slot=True sequential=True context_recent_evaluated=10 refill=False next=regions', self.init_unique_candidate_target)
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
-        logging.info('[ColdStartConfig] successful_eval_limit=%s reference_window=%s visualize=%s llm_batch=%s llm_workers=%s', self.cold_start_diversity_evals, self.cold_start_reference_window, self.cold_start_visualize, self.llm_batch_generation_enabled, self.llm_max_workers)
+        logging.info('[GenerationConfig] llm_batch=%s llm_workers=%s', self.llm_batch_generation_enabled, self.llm_max_workers)
         logging.info('[BehaviorExploreConfig] enabled=%s rounds=%s candidates_per_round=%s eval_batch_per_round=%s parent_counts=%s completion=fixed_rounds_no_refill', self.behavior_explore_enabled, self.behavior_explore_rounds, self.behavior_explore_candidates, self.behavior_explore_eval_batch_size, self.behavior_explore_parent_counts)
         logging.info('[BehaviorOperatorConfig] regional_parents=single_and_pair BX=farthest BR=nearest fallback_bx_parent_counts=%s fallback_tau=%s', self.behavior_expand_parent_counts, self.bx_parent_selection_tau)
-        logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s warmup=%s rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_warmup, self.region_rebuild_tolerance)
+        logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s start=initialization_complete rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
         logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=single_bx,single_br,intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
 
@@ -210,7 +209,7 @@ class SearchEngine:
         return complete
 
     def should_use_regions(self):
-        return bool(self.region_enabled and self.get_successful_real_eval_count() >= self.region_warmup and (len(self._behavior_explore_parent_archive) >= self.region_count) and (not self.is_real_eval_budget_exhausted()))
+        return bool(self.region_enabled and getattr(self, '_initialization_complete', False) and self._behavior_explore_parent_archive and (not self.is_real_eval_budget_exhausted()))
 
     def _region_generation_profiles(self, states=None):
         """Describe regions while assigning an equal generation share."""
@@ -1819,73 +1818,14 @@ class SearchEngine:
     def _build_initialization_context(self, attempt_index, previous_ideas):
         return {'candidate_index': int(attempt_index), 'previous_ideas': list(previous_ideas[-10:])}
 
-    def population_generation(self, target_count=None, prior_population=None):
-        target_count = self.init_unique_candidate_target if target_count is None else max(0, int(target_count))
-        all_candidates = []
-        unique_candidates = []
-        previous_ideas = []
-        seen_code_keys = {}
-        for individual in list(prior_population or []):
-            if not isinstance(individual, dict):
-                continue
-            code_key = self._canonical_code(individual.get('code', ''))
-            if code_key:
-                seen_code_keys[code_key] = individual.get('algorithm_id') or self._algorithm_id(code_key)
-            idea = self._summarize_initialization_idea(individual)
-            if idea:
-                previous_ideas.append(idea)
-        duplicate_count = 0
-        invalid_code_count = 0
-        generation_attempts = 0
-        generation_start = time.perf_counter()
-        while len(unique_candidates) < target_count and generation_attempts < self.init_max_generation_attempts and (self.get_remaining_generated_algorithm_slots() > 0):
-            generation_attempts += 1
-            print('i1')
-            context = self._build_initialization_context(generation_attempts, previous_ideas)
-            candidate = self.get_offspring([], 'i1', generation_context=context)
-            all_candidates.append(candidate)
-            offspring = self._candidate_to_offspring(candidate)
-            code_key = self._canonical_code(offspring.get('code', ''))
-            if not code_key:
-                invalid_code_count += 1
-                offspring['lineage_status'] = 'initial_invalid_code'
-                offspring['selected_for_evaluation'] = False
-                continue
-            if code_key in seen_code_keys:
-                duplicate_count += 1
-                offspring['lineage_status'] = 'initial_duplicate_code'
-                offspring['selected_for_evaluation'] = False
-                offspring['duplicate_of_algorithm_id'] = seen_code_keys[code_key]
-                continue
-            seen_code_keys[code_key] = offspring.get('algorithm_id')
-            unique_candidates.append(candidate)
-            idea = self._summarize_initialization_idea(offspring)
-            if idea:
-                previous_ideas.append(idea)
-        generation_batch_time = time.perf_counter() - generation_start
-        logging.info('[InitGenerate] attempts=%s unique_code=%s/%s duplicates=%s invalid_code=%s max_attempts=%s', generation_attempts, len(unique_candidates), target_count, duplicate_count, invalid_code_count, self.init_max_generation_attempts)
-        if len(unique_candidates) < target_count:
-            logging.warning('[InitGenerate] Unique-candidate target was not reached; continuing with %s unique candidates | generated=%s/%s.', len(unique_candidates), self.get_generated_algorithm_count(), self.generated_algorithm_limit)
-        self._attach_behavior_features(unique_candidates)
-        feature_valid = [candidate for candidate in unique_candidates if not self._candidate_to_offspring(candidate).get('behavior_feature_failed', False) and (not self._candidate_to_offspring(candidate).get('skip_real_eval', False)) and (self._candidate_to_offspring(candidate).get('behavior_embedding') is not None)]
-        feature_valid, behavior_duplicate_candidates = self._filter_candidates_by_raw_behavior(feature_valid)
-        selected = list(feature_valid)
-        self._set_lineage_status(selected, 'initial_behavior_unique', selected_for_evaluation=True)
-        logging.info('[InitBehaviorFilter] code_unique=%s feature_valid=%s behavior_duplicates=%s retained=%s eval_count=%s', len(unique_candidates), len(feature_valid) + len(behavior_duplicate_candidates), len(behavior_duplicate_candidates), len(selected), len(selected))
-        self._last_embedding_batch_time = 0.0
-        evaluated = self._evaluate_candidates(selected, pop=[], iteration=0)
-        self._finalize_lineage_candidates(all_candidates)
-        self._append_timing_record({'event': 'initialization_batch', 'operator': 'i1', 'n_generated': generation_attempts, 'n_candidates': len(unique_candidates), 'n_after_feature_filter': len(feature_valid), 'n_selected': len(selected), 'n_evaluated': getattr(self, '_last_n_evaluated', 0), 'n_skipped': max(0, generation_attempts - len(selected)) + getattr(self, '_last_n_eval_skipped', 0), 'generation_batch_time': generation_batch_time, 'behavior_feature_batch_time': getattr(self, '_last_behavior_feature_batch_time', 0.0), 'embedding_batch_time': getattr(self, '_last_embedding_batch_time', 0.0), 'predictor_selection_time': 0.0, 'real_eval_batch_time': getattr(self, '_last_real_eval_batch_time', 0.0)})
-        return [self._candidate_to_offspring(cand) for cand in evaluated]
-
     def population_generation_with_prompt_seed(self):
         """Build a fixed-size initialization with one unchanged prompt seed."""
         if not self.use_prompt_seed:
-            return self.population_generation()
+            return self._sequential_initialization(self.init_unique_candidate_target)
         seed_source = str(self.prompt_seed_source or '').strip()
         if not seed_source:
             logging.warning('[InitializationSeed] prompt seed is empty; falling back to I1-only initialization')
-            return self.population_generation()
+            return self._sequential_initialization(self.init_unique_candidate_target)
         seed_code = seed_source
         if not re.search('^\\s*(?:import\\s+numpy\\s+as\\s+np|from\\s+numpy\\s+import)', seed_code, re.M):
             seed_code = 'import numpy as np\n\n' + seed_code
@@ -1895,11 +1835,57 @@ class SearchEngine:
         seed_total_time = time.perf_counter() - seed_start
         seed_feature_valid = sum((individual.get('behavior_embedding') is not None and (not individual.get('behavior_feature_failed', False)) for individual in seed_population))
         self._append_timing_record({'event': 'initialization_seed', 'operator': 'seed', 'n_generated': 1, 'n_candidates': 1, 'n_after_feature_filter': int(seed_feature_valid), 'n_selected': 1, 'n_evaluated': int(getattr(self, '_last_n_evaluated', 0)), 'n_skipped': int(getattr(self, '_last_n_eval_skipped', 0)), 'generation_batch_time': 0.0, 'behavior_feature_batch_time': float(getattr(self, '_last_behavior_feature_batch_time', 0.0)), 'embedding_batch_time': float(getattr(self, '_last_embedding_batch_time', 0.0)), 'predictor_selection_time': 0.0, 'real_eval_batch_time': float(getattr(self, '_last_real_eval_batch_time', 0.0))})
-        generated_target = max(0, int(self.init_unique_candidate_target) - len(seed_population))
-        generated_population = self.population_generation(target_count=generated_target, prior_population=seed_population)
+        generated_target = max(0, int(self.init_unique_candidate_target) - 1)
+        generated_population = self._sequential_initialization(generated_target, seed_population, start_index=2)
         population = list(seed_population) + list(generated_population)
         logging.info('[InitializationSeed] retained=%s feature_valid=%s i1_target=%s initial_population=%s seconds=%.3f', len(seed_population), seed_feature_valid, generated_target, len(population), seed_total_time)
         return population
+
+    def _sequential_initialization(self, slots, prior_population=None, start_index=1):
+        """One attempt per slot; only evaluated successful ideas enter context."""
+        population = [p for p in list(prior_population or [])
+                      if np.isfinite(self._safe_objective(p.get('objective')))]
+        prior_count = len(population)
+        seen = {self._canonical_code(p.get('code')) for p in list(prior_population or [])}
+        for slot in range(int(slots)):
+            if self.is_real_eval_budget_exhausted() or self.get_remaining_generated_algorithm_slots() <= 0:
+                break
+            ideas = [self._summarize_initialization_idea(p) for p in population[-10:]]
+            context = self._build_initialization_context(start_index + slot, ideas)
+            started = time.perf_counter()
+            candidate = self.get_offspring([], 'i1', generation_context=context)
+            generation_time = time.perf_counter() - started
+            off = self._candidate_to_offspring(candidate)
+            code = self._canonical_code(off.get('code'))
+            selected = []
+            feature_time = 0.0
+            eval_time = 0.0
+            eval_count = 0
+            if not code:
+                off['lineage_status'] = 'initial_invalid_code'
+            elif code in seen:
+                off['lineage_status'] = 'initial_duplicate_code'
+            else:
+                seen.add(code)
+                self._attach_behavior_features([candidate])
+                feature_time = getattr(self, '_last_behavior_feature_batch_time', 0.0)
+                if not off.get('skip_real_eval') and not off.get('behavior_feature_failed'):
+                    selected = self._evaluate_candidates([candidate], pop=[], iteration=0)
+                    eval_time = getattr(self, '_last_real_eval_batch_time', 0.0)
+                    eval_count = getattr(self, '_last_n_evaluated', 0)
+                    population.extend(self._candidate_to_offspring(c) for c in selected
+                                      if np.isfinite(self._safe_objective(self._candidate_to_offspring(c).get('objective'))))
+            self._finalize_lineage_candidates([candidate])
+            self._append_timing_record({'event': 'initialization_sequential', 'operator': 'i1',
+                'n_generated': 1, 'n_candidates': 1, 'n_after_feature_filter': len(selected),
+                'n_selected': eval_count, 'n_evaluated': eval_count,
+                'n_skipped': int(not selected), 'generation_batch_time': generation_time,
+                'behavior_feature_batch_time': feature_time,
+                'embedding_batch_time': 0.0, 'predictor_selection_time': 0.0,
+                'real_eval_batch_time': eval_time})
+            logging.info('[InitSequential] slot=%s context_ideas=%s successful=%s refill=False',
+                         start_index + slot, len(ideas), len(population))
+        return population[prior_count:]
 
     def population_generation_seed(self, seeds):
         population = []

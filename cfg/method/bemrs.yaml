@@ -3,22 +3,19 @@ name: bemrs
 budget:
   real_evaluations: ${max_fe}
 initialization:
-  evaluations: 10
-  max_generation_attempts: 20
   use_prompt_seed: true
-  min_distinct_scores: 5
   prompt_seed: ${seed}
 generation:
   llm_batch: true
   llm_max_workers: 6
-  evaluation_ratio: 0.2
+  evaluation_ratio: 0.3
 cold_start:
   successful_eval_limit: 30
   reference_window: 100
   visualize: true
 behavior_explore:
-  enabled: true
-  rounds: 2
+  enabled: false
+  rounds: 0
   candidates: 20
   eval_batch_size: 10
 behavior_filter:
@@ -50,7 +47,6 @@ predictor:
     n_jobs: 1
 region:
   enabled: true
-  warmup_evals: 30
   count: 3
   archive_target_distinct: 24
   # Candidate count follows the frozen parent coverage plan.

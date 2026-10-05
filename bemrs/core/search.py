@@ -57,62 +57,6 @@ class BeMRS:
     def _count_distinct_initialization_scores(self, population):
         return len({key for key in (self._initialization_score_key(individual) for individual in population) if key is not None})
 
-    def _manage_initial_population_with_score_diversity(self, population, required_distinct_scores):
-        """Retain the best representatives of at least five score levels."""
-        required_distinct_scores = max(1, int(required_distinct_scores))
-        if self.pop_size < required_distinct_scores:
-            raise RuntimeError(f'Initialization score-diversity requirement is impossible: population size={self.pop_size}, required distinct scores={required_distinct_scores}.')
-        finite_population = [individual for individual in population if self._initialization_score_key(individual) is not None]
-        finite_population.sort(key=lambda individual: float(individual['objective']))
-        score_representatives = []
-        seen_scores = set()
-        for individual in finite_population:
-            score_key = self._initialization_score_key(individual)
-            if score_key in seen_scores:
-                continue
-            seen_scores.add(score_key)
-            score_representatives.append(individual)
-            if len(score_representatives) >= required_distinct_scores:
-                break
-        if len(score_representatives) < required_distinct_scores:
-            raise RuntimeError(f'Initialization ended without enough distinct finite scores: found={len(score_representatives)}, required={required_distinct_scores}.')
-        target_size = min(len(population), self.pop_size)
-        managed = self.manage.population_management(population, target_size)
-        retained = []
-        retained_codes = set()
-        for individual in score_representatives + list(managed) + finite_population:
-            code_key = self._canonical_code(individual.get('code', ''))
-            if not code_key or code_key in retained_codes:
-                continue
-            retained.append(individual)
-            retained_codes.add(code_key)
-            if len(retained) >= target_size:
-                break
-        retained.sort(key=lambda individual: float(individual.get('objective', float('inf'))))
-        return retained
-
-    def _complete_initialization_before_be(self, interface_ec, population):
-        """Run additional I1 batches until five distinct scores are retained."""
-        required = max(1, int(interface_ec.init_min_distinct_scores))
-        if interface_ec.real_eval_budget < required:
-            raise RuntimeError(f'Initialization requires at least {required} distinct scores before BE, but max_fe is only {interface_ec.real_eval_budget}.')
-        extra_round = 0
-        while self._count_distinct_initialization_scores(population) < required:
-            found = self._count_distinct_initialization_scores(population)
-            if interface_ec.is_real_eval_budget_exhausted():
-                raise RuntimeError(f'Real-evaluation budget was exhausted during I1 initialization with only {found}/{required} distinct finite scores; BE and formal evolution were not started.')
-            interface_ec.raise_if_generated_algorithm_limit_reached(context='I1 initialization before BE')
-            extra_round += 1
-            logging.info('[InitializationScoreDiversity] round=%s distinct_scores=%s/%s population=%s generated=%s/%s successful_evals=%s/%s action=continue_i1', extra_round, found, required, len(population), interface_ec.get_generated_algorithm_count(), interface_ec.generated_algorithm_limit, interface_ec.get_successful_real_eval_count(), interface_ec.real_eval_budget)
-            extra_population = interface_ec.population_generation(prior_population=population)
-            self.add2pop(population, extra_population)
-        population = self._manage_initial_population_with_score_diversity(population, required)
-        retained_scores = self._count_distinct_initialization_scores(population)
-        if retained_scores < required:
-            raise RuntimeError(f'Initial population management removed required score diversity: retained={retained_scores}, required={required}.')
-        logging.info('[InitializationScoreDiversity] complete=True distinct_scores=%s/%s population=%s extra_i1_rounds=%s generated=%s/%s successful_evals=%s/%s next=BE', retained_scores, required, len(population), extra_round, interface_ec.get_generated_algorithm_count(), interface_ec.generated_algorithm_limit, interface_ec.get_successful_real_eval_count(), interface_ec.real_eval_budget)
-        return population
-
     def run(self):
         print('- Evolution ready for', self.prob.problem, '-')
         time_start = time.time()
@@ -127,7 +71,20 @@ class BeMRS:
         loaded_initial_population = False
         population = interface_ec.population_generation_with_prompt_seed()
         n_start = 0
-        population = self._complete_initialization_before_be(interface_ec, population)
+        population = [p for p in population if np.isfinite(interface_ec._safe_objective(p.get('objective')))]
+        if not population or not interface_ec._behavior_explore_parent_archive:
+            raise RuntimeError('Initialization produced no evaluated algorithm with valid behavior features.')
+        interface_ec._initialization_complete = True
+        records, matrix, _ = interface_ec._region_advantage_archive_rows()
+        interface_ec.region_count = min(interface_ec.region_count, len(records),
+                                        len(np.unique(matrix, axis=0)))
+        if interface_ec.region_count < 1:
+            raise RuntimeError('Initialization produced no usable behavior points for partitioning.')
+        if interface_ec.region_enabled and not interface_ec._initialize_regions(reason='initialization_complete'):
+            raise RuntimeError('Failed to partition valid initialization algorithms.')
+        population = self.manage.population_management(population, min(len(population), self.pop_size))
+        logging.info('[InitializationComplete] evaluated=%s regions=%s population=%s next=mixed refill=False',
+                     interface_ec.get_successful_real_eval_count(), len(interface_ec._region_states), len(population))
         print('Pop initial: ')
         for off in population:
             print(' Obj: ', off['objective'], end='|')

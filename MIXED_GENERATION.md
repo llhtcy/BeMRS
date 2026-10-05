@@ -2,8 +2,14 @@
 
 Formal regional search now freezes the current regional parent pools once per
 round, generates both BX and BR, and filters/selects their combined candidate
-pool exactly once. The initialization and the two behavior-exploration rounds
-retain their existing settings. Without initialized regions the original global
+pool exactly once. Initialization uses archive_target_distinct slots, including
+the fixed seed when enabled. Each I1 is generated, feature-checked and evaluated
+before the next request, whose context contains only the most recent ten
+successfully evaluated ideas. Invalid or duplicate slots are not refilled;
+equal objectives and equal behaviors do not trigger initialization retries.
+Immediately afterwards valid evaluated behavior points are partitioned, with
+fewer regions if fewer distinct points are available. There are no BE rounds
+or score-diversity/warmup gates. Without initialized regions the original global
 parent fallback remains, but formal evaluation uses the ratio there as well.
 
 For a region with \`n_r\` unique parents, the plan has at most \`n_r\` BX rows
