@@ -168,7 +168,7 @@ class SearchEngine:
         logging.info('[BehaviorOperatorConfig] regional_parents=single_and_pair BX=farthest BR=nearest fallback_bx_parent_counts=%s fallback_tau=%s', self.behavior_expand_parent_counts, self.bx_parent_selection_tau)
         logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s warmup=%s rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_warmup, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
-        logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=single_bx,single_br,intra_bx,intra_br,inter_bx dedupe=operator_and_ordered_codes')
+        logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=single_bx,single_br,intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
 
     def set_timing_output(self, output_path):
         self.run_output_path = output_path
@@ -2216,7 +2216,7 @@ class SearchEngine:
         logging.info('[RegionAdvantageParents] source=advantage_archive target=%s records=%s distinct_scores=%s regions=%s parent_order=true_score parent_dedupe=code+score behavior_dedupe=removed assignment=%s global_population=retained', self.region_archive_target_distinct, len(parent_pool), len(set((float(value) for value in objectives))), pool_stats, 'nearest_behavior_center')
         return pools
 
-    def _build_inter_region_bx_parent_batches(self, pop, batch_size):
+    def _build_inter_region_bx_parent_batches(self, pop, batch_size, pools=None, quotas=None):
         """Build BX parents from top individuals of distinct behavior regions.
 
         The scheduled region owns each generation slot and supplies parent 1.
@@ -2224,7 +2224,7 @@ class SearchEngine:
         observed objective.  Parent counts cycle through 1..K while the
         existing BX prompt and operator label remain unchanged.
         """
-        pools = self._region_parent_pools(pop)
+        pools = self._region_parent_pools(pop) if pools is None else pools
         if not pools:
             return []
         ranked_entries = {}
@@ -2235,13 +2235,13 @@ class SearchEngine:
         all_region_ids = sorted(ranked_entries)
         if not all_region_ids:
             return []
-        scheduled_region_ids = self._scheduled_region_ids('bx')
+        scheduled_region_ids = self._scheduled_region_ids('bx') if quotas is None else set(quotas)
         anchor_region_ids = [region_id for region_id in all_region_ids if scheduled_region_ids is None or region_id in scheduled_region_ids]
         if not anchor_region_ids:
             logging.info('[RegionParents] operator=bx has no scheduled regions')
             return []
         batch_size = max(0, int(batch_size))
-        target_quotas = self._operator_region_generation_quotas('bx', anchor_region_ids, batch_size)
+        target_quotas = self._operator_region_generation_quotas('bx', anchor_region_ids, batch_size) if quotas is None else quotas
         accepted_by_region = {region_id: 0 for region_id in anchor_region_ids}
         rows = []
         attempts = 0
@@ -2290,7 +2290,8 @@ class SearchEngine:
                 selected_entries = candidate_entries
                 break
             if selected_entries is None:
-                selected_entries = [ranked_entries[region_id][0] for region_id in selected_region_ids]
+                attempts += 1
+                continue
             attempts += 1
             accepted_by_region[anchor_region_id] += 1
             rows.append({'region_id': int(anchor_region_id), 'parents': [entry['parent'] for entry in selected_entries], 'requested_parent_count': int(requested_parent_count), 'actual_parent_count': int(len(selected_entries)), 'operator_schedule': self._region_operator_metadata(anchor_region_id, operator='bx')})
@@ -2300,15 +2301,15 @@ class SearchEngine:
         logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=top_parent_priority global_population=retained', len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})})
         return rows
 
-    def _build_region_parent_batches(self, pop, operator, batch_size):
+    def _build_region_parent_batches(self, pop, operator, batch_size, pools=None, quotas=None):
         if operator == 'bx' and False:
             return self._build_balanced_bx_parent_batches(pop, batch_size)
         if operator == 'bx' and getattr(self, '_bx_use_inter_region_this_round', False):
-            return self._build_inter_region_bx_parent_batches(pop, batch_size)
-        pools = self._region_parent_pools(pop)
+            return self._build_inter_region_bx_parent_batches(pop, batch_size, pools, quotas)
+        pools = self._region_parent_pools(pop) if pools is None else pools
         if not pools:
             return []
-        scheduled_region_ids = self._scheduled_region_ids(operator)
+        scheduled_region_ids = self._scheduled_region_ids(operator) if quotas is None else set(quotas)
         if scheduled_region_ids is not None:
             pools = {region_id: entries for region_id, entries in pools.items() if int(region_id) in scheduled_region_ids}
             if not pools:
@@ -2316,7 +2317,7 @@ class SearchEngine:
                 return []
         region_ids = sorted(pools)
         batch_size = max(0, int(batch_size))
-        target_quotas = self._operator_region_generation_quotas(operator, region_ids, batch_size)
+        target_quotas = self._operator_region_generation_quotas(operator, region_ids, batch_size) if quotas is None else quotas
         rows = []
         requested_parent_counts = self._claim_behavior_parent_counts(operator, batch_size=batch_size)
         attempts = 0
@@ -2343,6 +2344,9 @@ class SearchEngine:
             if not entries:
                 attempts += 1
                 continue
+            if operator in BEHAVIOR_REFINE_OPERATORS and len(entries) < 2:
+                attempts += 1
+                continue
             quality_order, distances = region_geometry[region_id]
             region_round = attempts_by_region[region_id]
             attempts_by_region[region_id] += 1
@@ -2356,7 +2360,7 @@ class SearchEngine:
             max_parent_count = min(len(entries), len(distinct_objectives) if distinct_objectives else len(entries))
             parent_count_order = self._parent_count_attempt_order(operator, requested_parent_count, max_parent_count)
             parent_count = parent_count_order[failed_attempts_for_slot % len(parent_count_order)]
-            if operator in BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS and True:
+            if operator in BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS:
                 selected_indices = self._rank_softmax_maxmin_parent_indices(distances, parent_count=parent_count, anchor=anchor_index, tau=self.bx_parent_selection_tau, rng=self._region_rng, objective_values=objective_values, prefer_near=operator in BEHAVIOR_REFINE_OPERATORS)
             elif operator in BEHAVIOR_REFINE_OPERATORS and parent_count > 1:
                 selected_indices = self._refinement_parent_indices(distances, anchor=anchor_index, objective_values=objective_values, variant=region_round)
@@ -2375,7 +2379,7 @@ class SearchEngine:
             failed_attempts_for_slot = 0
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available', len(rows), batch_size)
-        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s global_population=retained', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, ('behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min') if operator in BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS and True else 'best_anchor_plus_nearby_contrast' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_max_min')
+        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s global_population=retained', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
         return rows
 
     @staticmethod
@@ -2750,6 +2754,29 @@ class SearchEngine:
         offspring['generation_attempts'] = int(generation_attempts)
         return (parents, offspring)
 
+    def _build_mixed_parent_plan(self, pop):
+        pools = self._region_parent_pools(pop)
+        quotas = {rid: len(entries) for rid, entries in pools.items() if entries}
+        bx_round = int(getattr(self, '_bx_region_round_count', 0))
+        self._bx_use_inter_region_this_round = bool(bx_round % 2)
+        self._bx_region_round_count = bx_round + 1
+        self._bx_inter_region_parent_count_cursor = 0
+        rows = []
+        for operator in ('bx', 'br'):
+            # Combination uniqueness is scoped to each operator, as before.
+            self._active_parent_batch_signatures = set()
+            batches = self._build_region_parent_batches(
+                pop, operator, sum(quotas.values()), pools=pools, quotas=quotas)
+            for row in batches:
+                row['operator'] = operator
+                row['kind'] = ('inter_bx' if self._bx_use_inter_region_this_round else 'intra_bx') if operator == 'bx' else 'intra_br'
+                rows.append(row)
+        logging.info('[MixedParentQuotas] parent_counts=%s BX_mode=%s actual=%s', quotas,
+                     'inter' if self._bx_use_inter_region_this_round else 'intra',
+                     {rid: {op: sum(r['region_id'] == rid and r['operator'] == op for r in rows)
+                            for op in ('bx', 'br')} for rid in quotas})
+        return rows
+
     def _generate_mixed_plan(self, plan):
         """Generate frozen parent plans, keeping actual operators in lineage.
 
@@ -2805,8 +2832,7 @@ class SearchEngine:
         if mixed_round:
             if not region_active:
                 raise ValueError('Mixed regional generation requires initialized regions')
-            from bemrs.offspring_plan import build_parent_plan
-            mixed_plan = build_parent_plan(self._region_parent_pools(pop), self._canonical_code)
+            mixed_plan = self._build_mixed_parent_plan(pop)
         self._bx_use_inter_region_this_round = False
         cold_start_active = behavior_explore_active
         n_generate = self.pop_size
@@ -2821,7 +2847,7 @@ class SearchEngine:
             n_generate = len(mixed_plan)
             regional_generate_count = n_generate
             region_scheduled_ids = {int(s['region_id']) for s in self._region_states}
-            logging.info('[MixedParentPlan] total=%s counts=%s ordered_pairs=True', n_generate,
+            logging.info('[MixedParentPlan] total=%s counts=%s dedupe=per_operator_unordered', n_generate,
                          {kind: sum(r['kind'] == kind for r in mixed_plan) for kind in
                           ('single_bx', 'single_br', 'intra_bx', 'intra_br', 'inter_bx')})
         elif region_active:

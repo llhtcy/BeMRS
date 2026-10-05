@@ -7,23 +7,30 @@ retain their existing settings. Without initialized regions the original global
 parent fallback remains, but formal evaluation uses the ratio there as well.
 
 For a region with \`n_r\` unique parents, the plan has at most \`n_r\` BX rows
-and \`n_r\` BR rows. Each member is the first parent of one BX row, paired with
-its farthest regional neighbor. BR keeps the best regional anchor and pairs it
-with each remaining parent; its anchor is the single-parent row when the region
-is a singleton. Singletons therefore have one single-parent BX and one
-single-parent BR. No cross-region rows are added to this per-region plan.
+and \`n_r\` BR rows. The existing probability based parent selection remains in
+use. BX cycles the first parent by quality and samples additional parents from
+the distance ranking with the existing seeded distribution. BR keeps the best
+regional anchor and samples its second parent toward nearby behavior. A
+singleton can produce one single-parent BX; BR keeps its existing two-parent
+requirement and skips a singleton. BX alternates its existing intra-region and
+cross-region mode on successive rounds. Each operator uses its own no-repeat
+parent signatures, and BX and BR are generated into one candidate pool.
 
-Deduplication is per round and per operator, with ordered code tuples. Reversed
-pairs remain distinct when they arise naturally; no extra reversal pass is made.
+Deduplication is per round and per operator, using an unordered canonical code
+tuple, matching the existing parent-batch mechanism. Reversed pairs therefore
+share the same duplicate key; no extra reversal pass is made.
 The same pair may be used by BX and BR. Duplicate membership from fallback pools
 is resolved by stable region order. Existing parent-pool code/score deduplication
 and anchor inclusion remain unchanged; the archive target is not an exact count
 of available parents. Failed generation is not refilled with extra parent pairs.
 The existing global generated-algorithm safety limit may truncate a plan.
 
-With region parent counts \`n_r\`, planned offspring count is
-\`2 * sum_r n_r\`. For 4+4+4 this is 24; for 5+5+6 it is 32. If a valid
-two-parent combination is unavailable, the corresponding slot is omitted.
+With region parent counts \`n_r\`, BX has an upper bound of
+\`sum_r n_r\`. BR has an upper bound of
+\`sum_{r:n_r>1}(n_r-1)\` when its first parent remains the regional best.
+For 4+4+4 this is at most 12 BX and 9 BR, or 21 combined. For 5+5+6 it is
+at most 16 BX and 13 BR, or 29 combined. If a valid probability-selected
+parent set is unavailable, the corresponding slot is omitted.
 
 `method.generation.evaluation_ratio=0.2` replaces the fixed formal evaluation
 batch size. N counts parseable, unique, fresh candidates with successful behavior

@@ -43,7 +43,7 @@ python main.py problem=tsp_constructive seed=1111
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
 | XGBoost | 起始50样本，最近最多200样本，新增10样本重训 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
-| BX/BR | 区域内父代覆盖：BX配最远邻居，BR固定区域最优锚点 |
+| BX/BR | 旧概率父代选择，同轮生成；区域父代数决定生成上限 |
 
 常用覆盖：
 
