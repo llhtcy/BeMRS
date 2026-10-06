@@ -41,7 +41,7 @@ python main.py problem=tsp_constructive seed=1111
 | 总成功真实评估预算 | 210（包含固定seed评估） |
 | 正式搜索真实评估 | 行为过滤前有效去重新候选的30%，向上取整；novelty从中预留1个 |
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
-| XGBoost | 起始50样本，最近最多200样本，新增10样本重训 |
+| XGBoost | 单一门槛 `predictor.min_samples=50`，最近最多200样本，新增10样本重训 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
 | BX/BR | 原概率父代选择；区域内BX、跨区域BX、BR同轮生成，BX名额均分并共用上限 |
 
@@ -61,7 +61,16 @@ OP/MKP/CVRP 的完整描述器保留，`feature_group=mean` 是内置投影，�
 其内容为当前优势档案；`best_population_generation_*.json` 保存档案最优算法。
 Probe阶段、特征计算、评估函数沿用原实现。
 
+初始化结束后直接建立区域；旧 BE/cold-start 配置、执行分支及提示词已移除。
+预测器启动和最少训练样本统一读取 `method.predictor.min_samples`：成功真实评估数与
+有效训练样本数都达到该门槛，且模型训练成功后，预测器及依赖它的行为过滤才可启用。
+旧 `method.predictor.start_successful_evals` 已移除。
+
 ## 检查与评估已有算法
+
+OP 新三维行为实验（决策熵、特征提取耗时秒、5% 联合输入扰动稳定性）
+见 [独立脚本与定义](experiments/op_response3/README.md)。仅该脚本启用
+`feature_group=response3`，默认 Mean6D 配置保持不变。
 
 ```bash
 python main.py check=true problem=op_aco

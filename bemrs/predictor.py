@@ -146,15 +146,20 @@ def build_behavior_embedder(problem_name: str, problem_size: Optional[int]=None,
         logging.info('[BehaviorFactory] BPP-online evaluation_items=%d probes=%d', size, len(embedder._states))
     else:
         raise NotImplementedError(f'No task-specific behavior extractor is registered for {task!r}. Supported cfg.problem.problem_name values are: tsp_gls, tsp_constructive, cvrp_aco, mkp_aco, op_aco, bpp_online.')
-    logging.info('[BehaviorFactory] task=%s extractor=%s output_dim=%d dataset=%s', task, getattr(embedder, 'extractor_version', type(embedder).__name__), int(embedder.output_dim), getattr(embedder, 'dataset_path', 'n/a'))
     group = os.environ.get('BEMRS_FEATURE_GROUP', 'full')
-    if group != 'full':
+    if group == 'response3':
+        if task != 'op_aco':
+            raise ValueError('response3 currently implements OP only')
+        from .op_response_behavior import OPResponseBehaviorEmbedder
+        embedder = OPResponseBehaviorEmbedder(embedder)
+    elif group != 'full':
         if task not in ('op_aco', 'mkp_aco', 'cvrp_aco'):
             raise ValueError(f'Feature subsets are unavailable for {task}')
         from importlib import import_module
         from .features import FeatureSubset
         names = import_module(f'bemrs.{task}_behavior').TREND_FEATURE_NAMES
         embedder = FeatureSubset(embedder, names, group)
+    logging.info('[BehaviorFactory] task=%s feature_group=%s extractor=%s output_dim=%d dataset=%s', task, group, getattr(embedder, 'extractor_version', type(embedder).__name__), int(embedder.output_dim), getattr(embedder, 'dataset_path', 'n/a'))
     return embedder
 _DEFAULT_BEHAVIOR_EMBEDDER = None
 
