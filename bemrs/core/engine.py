@@ -31,7 +31,6 @@ _KMEANS_N_INIT = 10
 class SearchEngine:
 
     def __init__(self, cfg, interface_prob):
-        self.pop_size = int(cfg.pop_size)
         self.interface_eval = interface_prob
         prompts = interface_prob.prompts
         self.prompt_seed_source = str(getattr(prompts, 'seed_func', '') or '')
@@ -105,7 +104,7 @@ class SearchEngine:
         self.region_count = max(1, int(os.environ.get('BEMRS_REGION_COUNT', 3)))
         archive_target_raw = os.environ.get('BEMRS_REGION_ARCHIVE_TARGET_DISTINCT')
         if archive_target_raw is None or str(archive_target_raw).strip() == '':
-            raise ValueError('BeMRS requires region.archive_target_distinct; the archive target must be independent of pop_size.')
+            raise ValueError('BeMRS requires region.archive_target_distinct.')
         self.region_archive_target_distinct = max(1, int(archive_target_raw))
         self.region_candidates_per_region = max(1, int(os.environ.get('BEMRS_REGION_CANDIDATES_PER_REGION', 4)))
         total_candidates_raw = os.environ.get('BEMRS_REGION_TOTAL_CANDIDATES')
@@ -383,7 +382,7 @@ class SearchEngine:
             off = self._candidate_to_offspring(cand)
             code = off.get('code', '')
             code_hash = str(abs(hash(self._canonical_code(code))))[-12:]
-            source = {'region': 'region', 'global_population': 'global', 'behavior_exploration': 'explore'}.get(off.get('generation_parent_scope'), '-')
+            source = {'region': 'region', 'advantage_archive': 'archive', 'behavior_exploration': 'explore'}.get(off.get('generation_parent_scope'), '-')
             logging.debug('[BehaviorRank] %4d %3s %3s %6s %9s %12s', rank, '*' if id(cand) in selected_ids else '', off.get('region_allocation_id', '-'), source, self._fmt_float(off.get('behavior_pred_score')), code_hash)
 
     def _log_post_eval_rankings(self, evaluated_candidates):
@@ -1090,10 +1089,10 @@ class SearchEngine:
             return ([], None, None)
         return (records, np.vstack(rows), np.asarray(objectives, dtype=np.float64))
 
-    def _region_advantage_archive_rows(self, extra_records=None):
+    def _region_advantage_archive_rows(self):
         merged = []
         seen_codes = set()
-        for record in list(extra_records or []) + list(self._behavior_explore_parent_archive):
+        for record in self._behavior_explore_parent_archive:
             if not isinstance(record, dict):
                 continue
             code_key = self._canonical_code(record.get('code'))
@@ -1420,7 +1419,7 @@ class SearchEngine:
         if self.behavior_predictor is None:
             return
         finite_region_bests = [float(state['best_objective']) for state in self._region_states if np.isfinite(float(state['best_objective']))]
-        snapshot = {'active': bool(self._region_states), 'region_builder': 'behavior_kmeans', 'region_builder_stats': dict(getattr(self, '_kmeans_region_stats', {})), 'kmeans_full_rebuild_count': int(getattr(self, '_kmeans_full_rebuild_count', 0)), 'fit_samples': int(self._region_fit_count), 'space_dim': self._region_space_dim, 'global_best': float(min(finite_region_bests)) if finite_region_bests else None, 'objective_scale': float(self._region_objective_scale()) if self._region_states else None, 'center_history': list(getattr(self, '_region_center_history', [])), 'global_population_retained': True, 'archive_region_ids': [], 'regions': []}
+        snapshot = {'active': bool(self._region_states), 'region_builder': 'behavior_kmeans', 'region_builder_stats': dict(getattr(self, '_kmeans_region_stats', {})), 'kmeans_full_rebuild_count': int(getattr(self, '_kmeans_full_rebuild_count', 0)), 'fit_samples': int(self._region_fit_count), 'space_dim': self._region_space_dim, 'global_best': float(min(finite_region_bests)) if finite_region_bests else None, 'objective_scale': float(self._region_objective_scale()) if self._region_states else None, 'center_history': list(getattr(self, '_region_center_history', [])), 'parent_source': 'advantage_archive', 'archive_region_ids': [], 'regions': []}
         predictor_codes = [self._canonical_code(code) for code in getattr(self.behavior_predictor, '_codes', [])]
         archive_matrix = np.asarray(getattr(self.behavior_predictor, '_X', []), dtype=np.float64)
         if self._region_states and archive_matrix.ndim == 2 and (len(archive_matrix) > 0) and (archive_matrix.shape[1] == self._region_feature_dim):
@@ -1948,7 +1947,7 @@ class SearchEngine:
         offspring['_lineage_llm_attempts'] = getattr(self.evol, 'last_llm_attempts', None)
         if generation_context:
             offspring['initialization_context'] = dict(generation_context)
-        offspring.setdefault('generation_parent_scope', 'global_population')
+        offspring.setdefault('generation_parent_scope', 'advantage_archive')
         return (parents, offspring)
 
     def _sample_operator_parents(self, pop, operator):
@@ -1961,7 +1960,7 @@ class SearchEngine:
                 raise RuntimeError('No unused behavior-exploration parent set remains')
             return batches[0]
         if operator in STANDARD_BEHAVIOR_OPERATORS:
-            batches = self._build_global_population_parent_batches(pop, operator, batch_size=1)
+            batches = self._build_archive_parent_batches(pop, operator, batch_size=1)
             if batches:
                 return batches[0]
             raise RuntimeError(f'No unused behavior-guided parent set remains for operator={operator}')
@@ -2142,7 +2141,7 @@ class SearchEngine:
     def _region_parent_pools(self, pop):
         if not self._initialize_regions():
             return {}
-        parent_pool, matrix, objectives = self._region_advantage_archive_rows(extra_records=pop)
+        parent_pool, matrix, objectives = self._region_advantage_archive_rows()
         if matrix is None or not parent_pool:
             return {}
         if matrix.shape[1] != self._region_feature_dim:
@@ -2200,7 +2199,7 @@ class SearchEngine:
             state['member_count'] = int(len(assigned))
             finite_objectives = [self._safe_objective(entry['parent'].get('objective')) for entry in entries if np.isfinite(self._safe_objective(entry['parent'].get('objective')))]
             pool_stats[int(state['region_id'])] = {'assigned': int(len(assigned)), 'parents': int(len(entries)), 'dedupe': 'code+score', 'best': round(float(min(finite_objectives)), 6) if finite_objectives else None}
-        logging.info('[RegionAdvantageParents] source=advantage_archive target=%s records=%s distinct_scores=%s regions=%s parent_order=true_score parent_dedupe=code+score behavior_dedupe=removed assignment=%s global_population=retained', self.region_archive_target_distinct, len(parent_pool), len(set((float(value) for value in objectives))), pool_stats, 'nearest_behavior_center')
+        logging.info('[RegionAdvantageParents] source=advantage_archive target=%s records=%s distinct_scores=%s regions=%s parent_order=true_score parent_dedupe=code+score behavior_dedupe=removed assignment=%s parent_source=advantage_archive', self.region_archive_target_distinct, len(parent_pool), len(set((float(value) for value in objectives))), pool_stats, 'nearest_behavior_center')
         return pools
 
     def _build_inter_region_bx_parent_batches(self, pop, batch_size, pools=None, quotas=None):
@@ -2285,7 +2284,7 @@ class SearchEngine:
         self._bx_inter_region_parent_count_cursor = parent_count_cursor
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available for operator=bx', len(rows), batch_size)
-        logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=top_parent_priority global_population=retained', len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})})
+        logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=top_parent_priority parent_source=advantage_archive', len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})})
         return rows
 
     def _build_region_parent_batches(self, pop, operator, batch_size, pools=None, quotas=None):
@@ -2366,7 +2365,7 @@ class SearchEngine:
             failed_attempts_for_slot = 0
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available', len(rows), batch_size)
-        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s global_population=retained', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
+        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s parent_source=advantage_archive', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
         return rows
 
     @staticmethod
@@ -2492,7 +2491,7 @@ class SearchEngine:
         return selected
 
     def _get_offspring_from_region_parents(self, parents, operator, region_id):
-        offspring = {'algorithm': None, 'code': None, 'objective': None, 'other_inf': None, 'operator': operator, 'generation_parent_scope': 'region' if region_id is not None else 'global_population', 'generation_attempts': 1}
+        offspring = {'algorithm': None, 'code': None, 'objective': None, 'other_inf': None, 'operator': operator, 'generation_parent_scope': 'region' if region_id is not None else 'advantage_archive', 'generation_attempts': 1}
         if region_id is not None:
             offspring['region_source_id'] = int(region_id)
             schedule = self._region_operator_metadata(region_id, operator=operator)
@@ -2519,8 +2518,8 @@ class SearchEngine:
         self._register_lineage_event(parents, offspring, operator)
         return (parents, offspring)
 
-    def _build_global_population_parent_batches(self, pop, operator, batch_size):
-        """Build behavior-diverse, non-repeating global parent sets."""
+    def _build_archive_parent_batches(self, pop, operator, batch_size):
+        """Build behavior-diverse, non-repeating archive parent sets."""
         parent_pool = []
         seen_codes = set()
         for parent in list(pop or []):
@@ -2532,7 +2531,7 @@ class SearchEngine:
             seen_codes.add(code_key)
             parent_pool.append(parent)
         if not parent_pool:
-            raise ValueError('Global candidate generation requires a non-empty population')
+            raise ValueError('Candidate generation requires a non-empty advantage archive')
         finite_parents = [parent for parent in parent_pool if np.isfinite(self._safe_objective(parent.get('objective')))]
         elite_parent = min(finite_parents or parent_pool, key=lambda parent: self._safe_objective(parent.get('objective')))
         elite_code = self._canonical_code(elite_parent.get('code'))
@@ -2580,8 +2579,8 @@ class SearchEngine:
             batches.append(parents)
             failed_attempts_for_slot = 0
         if len(batches) < int(batch_size):
-            logging.warning('[GlobalParents] only %s/%s non-repeating parent sets available', len(batches), batch_size)
-        logging.info('[GlobalParents] operator=%s candidates=%s unique_parent_sets=%s parent_count_histogram=%s elite_in_first_batch=%s elite_objective=%.6g behavior_diverse=%s selection=%s', operator, len(batches), len(batches), {count: sum((len(parents) == count for parents in batches)) for count in sorted({len(parents) for parents in batches})}, bool(batches and elite_code in self._parent_batch_signature(batches[0])), self._safe_objective(elite_parent.get('objective')), valid_geometry, 'best_anchor_plus_nearby_contrast' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_max_min')
+            logging.warning('[ArchiveParents] only %s/%s non-repeating parent sets available', len(batches), batch_size)
+        logging.info('[ArchiveParents] operator=%s candidates=%s unique_parent_sets=%s parent_count_histogram=%s elite_in_first_batch=%s elite_objective=%.6g behavior_diverse=%s selection=%s', operator, len(batches), len(batches), {count: sum((len(parents) == count for parents in batches)) for count in sorted({len(parents) for parents in batches})}, bool(batches and elite_code in self._parent_batch_signature(batches[0])), self._safe_objective(elite_parent.get('objective')), valid_geometry, 'best_anchor_plus_nearby_contrast' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_max_min')
         return batches
 
     def _build_behavior_explore_parent_batches(self, pop, batch_size, start_index=0):
@@ -2673,13 +2672,13 @@ class SearchEngine:
             return []
         parent_scope = str(parent_scope or 'auto').strip().lower()
         region_parent_rows = None
-        if parent_scope != 'global_population' and operator in STANDARD_BEHAVIOR_OPERATORS and self.should_use_regions():
+        if parent_scope != 'advantage_archive' and operator in STANDARD_BEHAVIOR_OPERATORS and self.should_use_regions():
             region_parent_rows = self._build_region_parent_batches(pop, operator, batch_size)
             parent_batches = [row['parents'] for row in region_parent_rows]
             generation_parent_scope = 'region'
-        elif parent_scope == 'global_population':
-            parent_batches = self._build_global_population_parent_batches(pop, operator, batch_size)
-            generation_parent_scope = 'global_population'
+        elif parent_scope == 'advantage_archive' or operator in STANDARD_BEHAVIOR_OPERATORS:
+            parent_batches = self._build_archive_parent_batches(pop, operator, batch_size)
+            generation_parent_scope = 'advantage_archive'
         elif operator == 'i1':
             parent_batches = [None for _ in range(batch_size)]
             generation_parent_scope = 'initialization'
@@ -2689,7 +2688,7 @@ class SearchEngine:
             generation_parent_scope = 'behavior_exploration'
         else:
             parent_batches = [self._sample_operator_parents(pop, operator) for _ in range(batch_size)]
-            generation_parent_scope = 'global_population'
+            generation_parent_scope = 'advantage_archive'
         self._claim_generated_algorithm_slots(len(parent_batches), context=f'batch_{operator}')
         generated_rows = self.evol.generate_batch(operator=operator, parent_batches=parent_batches)
         candidates = []
@@ -2849,7 +2848,7 @@ class SearchEngine:
             mixed_plan = self._build_mixed_parent_plan(pop)
         self._bx_use_inter_region_this_round = False
         cold_start_active = behavior_explore_active
-        n_generate = self.pop_size
+        n_generate = len(self._region_advantage_archive_rows()[0])
         regional_generate_count = 0
         region_scheduled_ids = set()
         region_fresh_counts = {}

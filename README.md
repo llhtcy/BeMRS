@@ -36,10 +36,10 @@ python main.py problem=tsp_constructive seed=1111
 |---|---|
 | OP / MKP / CVRP 特征 | Mean 6D / 7D / 7D |
 | TSP-GLS / TSP 构造特征 | compact12 / 原有72D |
-| 种群 / 档案 | 10 / 严格最多24个不同分数的算法，每个分数仅保留一个；初始化名额随档案目标变化 |
+| 优势档案 | 严格最多24个不同分数的算法，每个分数仅保留一个；初始化名额随档案目标变化，无独立全局种群 |
 | 区域 / 子代生成 | 3 / 每区域父代数决定 BX、BR 数量，同轮混合筛选 |
 | 总成功真实评估预算 | 210（包含固定seed评估） |
-| 正式搜索真实评估 | 有效去重新候选的20%，向上取整；novelty从中预留1个 |
+| 正式搜索真实评估 | 行为过滤前有效去重新候选的30%，向上取整；novelty从中预留1个 |
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
 | XGBoost | 起始50样本，最近最多200样本，新增10样本重训 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
@@ -48,13 +48,17 @@ python main.py problem=tsp_constructive seed=1111
 常用覆盖：
 
 ```bash
-python main.py problem=op_aco pop_size=10 method.region.archive_target_distinct=48
+python main.py problem=op_aco method.region.archive_target_distinct=48
 python main.py method.behavior_filter.rtol=0.01
 python main.py method.novelty_selection.enabled=false
 python main.py problem=op_aco problem.behavior.feature_group=full
 ```
 
 OP/MKP/CVRP 的完整描述器保留，`feature_group=mean` 是内置投影，不是运行时修改类定义。
+
+进化仅维护优势档案和区域锚点；完整评估历史用于预测器、去重和新颖性计算。
+`pop_size` 已移除。为兼容结果读取脚本，`population_generation_*.json` 文件名保留，
+其内容为当前优势档案；`best_population_generation_*.json` 保存档案最优算法。
 Probe阶段、特征计算、评估函数沿用原实现。
 
 ## 检查与评估已有算法

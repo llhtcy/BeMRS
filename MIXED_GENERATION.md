@@ -9,8 +9,9 @@ successfully evaluated ideas. Invalid or duplicate slots are not refilled;
 equal objectives and equal behaviors do not trigger initialization retries.
 Immediately afterwards valid evaluated behavior points are partitioned, with
 fewer regions if fewer distinct points are available. There are no BE rounds
-or score-diversity/warmup gates. Without initialized regions the original global
-parent fallback remains, but formal evaluation uses the ratio there as well.
+or score-diversity/warmup gates. There is no separate global population or
+pop_size parameter. Without regions, BX/BR sample from the current advantage
+archive and each requests up to its actual size, using the same evaluation ratio.
 
 For a region with \`n_r\` unique parents, the plan has at most \`n_r\` BX rows
 and \`n_r\` BR rows. The existing probability based parent selection remains in
@@ -46,7 +47,7 @@ For 4+4+4 this is at most 12 BX and 9 BR, or 21 combined. For 5+5+6 it is
 at most 16 BX and 13 BR, or 29 combined. If a valid probability-selected
 parent set is unavailable, the corresponding slot is omitted.
 
-`method.generation.evaluation_ratio=0.2` replaces the fixed formal evaluation
+`method.generation.evaluation_ratio=0.3` replaces the fixed formal evaluation
 batch size. N counts parseable, unique, fresh candidates with successful behavior
 extraction, BEFORE behavior filtering (so filtering does not reduce the budget
 twice). B = min(ceil(ratio*N), remaining global evaluations, surviving candidates).
@@ -56,11 +57,16 @@ selector, excluding regional selections. The rest use the existing annealed
 regional allocator and regional predictor ranking. No extra novelty evaluation
 is added beyond B. The global successful-evaluation limit remains unchanged.
 
-The default archive target is 24 (matching the current server configuration), population 10, regions 3, total successful
+The default archive target is 24 (matching the current server configuration), regions 3, total successful
 evaluation limit 210. Old candidates_per_region and eval_batch_size are removed
 from the default regional configuration. The fixed operator cycle is no longer
 called by formal search; legacy helper paths remain for this first revision.
 The existing distance-rank parent-selection parameters remain in use.
+
+Archive snapshots replace population management. Historical
+population_generation_*.json names now contain the strict advantage archive;
+best_population_generation_*.json is its incumbent. Full evaluated history,
+predictor training, novelty and regional anchors retain their separate roles.
 
 Logs: MixedParentPlan (per-region BX/BR counts), EvaluationRatio (N, ratio,
 available, B), RegionalBatchBudget (novelty/region split). Lineage keeps actual

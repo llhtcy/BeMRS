@@ -60,6 +60,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(np.mean(sample(False)),np.mean(sample(True)))
 
     def test_full_search_mock_io(self):
+        self._run_search_mock_io()
+
+    def test_archive_fallback_without_regions(self):
+        self._run_search_mock_io(regions=False, budget=32)
+
+    def test_budget_exhausted_during_initialization(self):
+        self._run_search_mock_io(budget=12)
+
+    def _run_search_mock_io(self, regions=True, budget=65):
         from bemrs.core.llm import InterfaceAPI
         from bemrs.problem_adapter import Problem
         counter=[0]
@@ -85,7 +94,8 @@ class RuntimeTests(unittest.TestCase):
             os.chdir(tmp)
             try:
                 with initialize_config_dir(version_base=None,config_dir=str(ROOT/'cfg')):
-                    cfg=compose(config_name='config',overrides=['max_fe=65','method.visualization.enabled=false','method.cold_start.visualize=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
+                    cfg=compose(config_name='config',overrides=[f'max_fe={budget}',f'method.region.enabled={str(regions).lower()}','method.visualization.enabled=false','method.cold_start.visualize=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
+                self.assertNotIn('pop_size', cfg)
                 workspace=isolated_workspace(Path(tmp))
                 with patch('bemrs.core.engine.build_behavior_embedder',return_value=Encoder()),patch.object(InterfaceAPI,'get_responses',responses),patch.object(Problem,'batch_evaluate',evaluate):
                     code,path=BeMRS(cfg,workspace).evolve()
@@ -93,10 +103,28 @@ class RuntimeTests(unittest.TestCase):
                 import json
                 rows=[json.loads(l) for l in Path('algorithm_lineage.jsonl').read_text().splitlines()]
                 successful=[r for r in rows if r['evaluation']['success'] and not r['evaluation'].get('shared')]
-                self.assertEqual(len(successful),65)
+                self.assertEqual(len(successful),budget)
                 self.assertFalse(any(r['operator']=='be' for r in rows))
-                self.assertEqual(sum(r['generation']==0 for r in successful),24)
-                self.assertEqual(len(init_prompts),23)
+                self.assertEqual(sum(r['generation']==0 for r in successful),min(24,budget))
+                self.assertEqual(len(init_prompts),min(24,budget)-1)
+                snapshots = list(Path('.').glob('population_generation_*.json'))
+                self.assertTrue(snapshots)
+                for snapshot in snapshots:
+                    archive = json.loads(snapshot.read_text())
+                    self.assertLessEqual(len(archive),24)
+                    self.assertEqual(len(archive),len({r['objective'] for r in archive}))
+                    self.assertEqual(archive,sorted(archive,key=lambda r:r['objective']))
+                best=json.loads(Path(path).read_text())
+                self.assertEqual(best['objective'], min(r['child']['objective'] for r in successful))
+                if not regions:
+                    formal=[r for r in rows if r['generation']>0]
+                    self.assertTrue(formal)
+                    self.assertEqual({r['pipeline']['generation_parent_scope'] for r in formal},{'advantage_archive'})
+                    self.assertEqual(sum(r['generation']==1 and r['operator']=='bx' for r in formal),24)
+                    return
+                if budget <= 24:
+                    self.assertFalse(any(r['generation']>0 for r in rows))
+                    return
                 last_context=init_prompts[-1].split('Most recent successfully evaluated algorithm ideas')[1]
                 self.assertIn('Unique synthetic mechanism 22\n',last_context)
                 self.assertIn('Unique synthetic mechanism 13\n',last_context)
@@ -110,7 +138,7 @@ class RuntimeTests(unittest.TestCase):
                     if row['pipeline'].get('generation_kind'):
                         mixed[row['generation']].append(row)
                 self.assertTrue(mixed)
-                remaining = 65 - 24  # One archive-sized initialization, no BE.
+                remaining = budget - 24  # One archive-sized initialization, no BE.
                 selected_counts = []
                 for generation in sorted(mixed):
                     batch = mixed[generation]

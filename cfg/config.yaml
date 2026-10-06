@@ -6,7 +6,6 @@ seed: 1111
 model: openai/qwen3-8b
 api_key: ${oc.env:OPENAI_API_KEY,""}
 base_url: ${oc.env:OPENAI_BASE_URL,https://api.openai.com/v1}
-pop_size: 10
 max_fe: 210
 timeout: 100
 check: false
