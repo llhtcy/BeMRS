@@ -25,9 +25,6 @@ operators:
   expand_parent_counts:
   - 1
   - 2
-  explore_parent_counts:
-  - 1
-  - 2
 func_name: heuristics
 description: Solving Capacitated Vehicle Routing Problem (CVRP) via stochastic solution
   sampling. CVRP requires finding the shortest path that visits all given nodes and

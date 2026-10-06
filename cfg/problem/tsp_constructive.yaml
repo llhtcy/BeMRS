@@ -20,10 +20,6 @@ operators:
   - 1
   - 2
   - 4
-  explore_parent_counts:
-  - 1
-  - 2
-  - 4
 func_name: select_next_node
 description: Solving Traveling Salesman Problem (TSP) with constructive heuristics.
   TSP requires finding the shortest path that visits all given nodes and returns to

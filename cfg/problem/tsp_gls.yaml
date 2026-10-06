@@ -20,6 +20,3 @@ operators:
   expand_parent_counts:
   - 1
   - 2
-  explore_parent_counts:
-  - 1
-  - 2

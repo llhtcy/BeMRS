@@ -74,11 +74,6 @@ class Evolution:
         prompt_content = self.prompt_task + '\nI have ' + str(len(indivs)) + ' algorithm reference(s) from one promising local behavior region: \n' + prompt_indiv + comparison + '\nCreate a locally refined algorithm. Preserve the effective decision backbone of No.1 and make exactly one substantive, controlled change to the mechanism most likely to improve performance or robustness. If a contrast is supplied, use it only to diagnose that change; otherwise diagnose the change from No.1 alone. Do not rewrite the whole algorithm, add unrelated mechanisms, or rely only on renaming and constant tuning.\nFirst, describe your new algorithm and main steps in one sentence.         The description must be inside a brace. Next, implement it in Python as a function named ' + self.prompt_func_name + '. This function should accept ' + str(len(self.prompt_func_inputs)) + ' input(s): ' + self.joined_inputs + '. The function should return ' + str(len(self.prompt_func_outputs)) + ' output(s): ' + self.joined_outputs + '. ' + self.prompt_inout_inf + ' ' + self.prompt_other_inf + '\n' + 'Do not give additional explanations.'
         return prompt_content
 
-    def get_prompt_be(self, indivs):
-        prompt_indiv = self._format_parent_algorithms(indivs)
-        parent_wording = 'The supplied algorithm is a behaviorally selected reference.' if len(indivs) == 1 else 'The supplied algorithms were selected to represent different observed behaviors.'
-        prompt_content = self.prompt_task + '\n' + 'I have ' + str(len(indivs)) + ' existing algorithm reference(s) with their codes as follows: \n' + prompt_indiv + parent_wording + '\n' + 'The search is repeatedly producing equivalent, invalid, or already evaluated ' + 'behaviors. Create a valid algorithm with a fundamentally different core decision ' + 'mechanism. Use the references only as evidence of mechanisms to avoid, not as ' + 'templates. Do not reuse the dominant scoring structure, concatenate their branches, ' + 'rename variables, reformat code, or make only a small constant change.\n' + 'First, describe your new algorithm and main steps in one sentence. ' + 'The description must be inside a brace. Next, implement it in Python as a ' + 'function named ' + self.prompt_func_name + '. This function should accept ' + str(len(self.prompt_func_inputs)) + ' input(s): ' + self.joined_inputs + '. The function should return ' + str(len(self.prompt_func_outputs)) + ' output(s): ' + self.joined_outputs + '. ' + self.prompt_inout_inf + ' ' + self.prompt_other_inf + '\nDo not give additional explanations.'
-        return prompt_content
 
     def _extract_code_candidate(self, response):
         """Prefer complete fenced code; retain the legacy parser as fallback.
@@ -172,8 +167,6 @@ class Evolution:
             return self.get_prompt_bx(parents)
         if operator in {'br', 'm1', 'm2'}:
             return self.get_prompt_br(parents)
-        if operator in {'be', 'be1'}:
-            return self.get_prompt_be(parents)
         raise ValueError(f'Unsupported evolution operator: {operator}')
 
     def generate_batch(self, operator, parent_batches, initialization_contexts=None):
@@ -259,9 +252,4 @@ class Evolution:
             print('\n >>> check designed code: \n', code_all)
             print(">>> Press 'Enter' to continue")
             input()
-        return [code_all, algorithm]
-
-    def be(self, parents):
-        prompt_content = self.get_prompt_be(parents)
-        [code_all, algorithm] = self._get_alg(prompt_content)
         return [code_all, algorithm]

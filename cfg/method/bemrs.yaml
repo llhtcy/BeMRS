@@ -9,15 +9,6 @@ generation:
   llm_batch: true
   llm_max_workers: 6
   evaluation_ratio: 0.3
-cold_start:
-  successful_eval_limit: 30
-  reference_window: 100
-  visualize: true
-behavior_explore:
-  enabled: false
-  rounds: 0
-  candidates: 20
-  eval_batch_size: 10
 behavior_filter:
   enabled: true
   start_with_predictor: true
@@ -29,7 +20,6 @@ novelty_selection:
   enabled: true
 predictor:
   enabled: true
-  start_successful_evals: 50
   min_samples: 50
   max_samples: 200
   seed: ${seed}

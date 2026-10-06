@@ -23,7 +23,6 @@ except ImportError as import_error:
 from .operators import Evolution
 BEHAVIOR_EXPAND_OPERATORS = frozenset({'bx'})
 BEHAVIOR_REFINE_OPERATORS = frozenset({'br'})
-BEHAVIOR_ESCAPE_OPERATORS = frozenset({'be'})
 STANDARD_BEHAVIOR_OPERATORS = BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS
 _FIXED_OPERATOR_CYCLE = ('bx', 'bx', 'bx', 'br')
 _KMEANS_N_INIT = 10
@@ -85,21 +84,10 @@ class SearchEngine:
         self._behavior_filter_active_logged = False
         self._behavior_filter_predictor_ready_for_batch = None
         self.behavior_novelty_slot_enabled = os.environ.get('BEMRS_BEHAVIOR_NOVELTY_SLOT_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
-        self.surrogate_start_successful_evals = max(0, int(os.environ.get('BEMRS_SURROGATE_START_SUCCESSFUL_EVALS', 50)))
         self.predictor_retrain_interval = max(1, int(os.environ.get('BEMRS_PREDICTOR_RETRAIN_INTERVAL', 10)))
         self._behavior_trained_samples = 0
-        self.cold_start_diversity_evals = max(0, int(os.environ.get('BEMRS_COLD_START_DIVERSITY_EVALS', 30)))
-        self.cold_start_reference_window = max(0, int(os.environ.get('BEMRS_COLD_START_REFERENCE_WINDOW', 100)))
-        self.cold_start_visualize = os.environ.get('BEMRS_COLD_START_VISUALIZE', '1').lower() not in {'0', 'false', 'no'}
-        self.behavior_explore_enabled = os.environ.get('BEMRS_BEHAVIOR_EXPLORE_ENABLED', '1').lower() not in {'0', 'false', 'no'}
-        self.behavior_explore_rounds = max(0, int(os.environ.get('BEMRS_BEHAVIOR_EXPLORE_ROUNDS', 2)))
-        self._behavior_explore_rounds_completed = 0
-        self.behavior_explore_candidates = max(1, int(os.environ.get('BEMRS_BEHAVIOR_EXPLORE_CANDIDATES', 30)))
-        self.behavior_explore_eval_batch_size = max(1, int(os.environ.get('BEMRS_BEHAVIOR_EXPLORE_EVAL_BATCH_SIZE', 10)))
-        self.behavior_explore_parent_counts = self._parse_positive_int_list(os.environ.get('BEMRS_BEHAVIOR_EXPLORE_PARENT_COUNTS', getattr(task_problem_config, 'behavior_explore_parent_counts', default_parent_counts_text)), default=default_parent_counts)
-        self._behavior_explore_parent_cursor = 0
-        self._behavior_explore_parent_archive = []
-        self._behavior_explore_parent_codes = set()
+        self._evaluated_algorithm_history = []
+        self._evaluated_algorithm_codes = set()
         self.region_enabled = os.environ.get('BEMRS_REGION_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
         self.region_count = max(1, int(os.environ.get('BEMRS_REGION_COUNT', 3)))
         archive_target_raw = os.environ.get('BEMRS_REGION_ARCHIVE_TARGET_DISTINCT')
@@ -136,7 +124,6 @@ class SearchEngine:
         self._region_center_history = []
         self._kmeans_region_stats = {}
         self._kmeans_full_rebuild_count = 0
-        self._behavior_exploration_regions_rebuilt = False
         self._active_parent_batch_signatures = set()
         self._bx_region_round_count = 0
         self._bx_use_inter_region_this_round = False
@@ -146,7 +133,6 @@ class SearchEngine:
         self.run_output_path = None
         self.init_unique_candidate_target = self.region_archive_target_distinct
         self._initialization_complete = False
-        self.behavior_explore_enabled = False
         self.timing_csv_path = os.environ.get('BEMRS_TIMING_CSV', 'bemrs_timing_records.csv')
         self.lineage_jsonl_path = os.environ.get('BEMRS_LINEAGE_JSONL')
         self.lineage_edges_csv_path = os.environ.get('BEMRS_LINEAGE_EDGES_CSV')
@@ -157,12 +143,11 @@ class SearchEngine:
         self.selection_log_top = max(0, int(os.environ.get('BEMRS_SELECTION_LOG_TOP', 10)))
         if not self.debug:
             warnings.filterwarnings('ignore')
-        logging.info('[Predictor] global_xgboost_direct enabled=%s input_dim=%s start=%s window=%s retrain=%s', self.surrogate_selection_enabled, self.behavior_predictor.emb_dim, self.surrogate_start_successful_evals, self.behavior_predictor.max_samples, self.predictor_retrain_interval)
+        logging.info('[Predictor] global_xgboost_direct enabled=%s input_dim=%s min_samples=%s window=%s retrain=%s', self.surrogate_selection_enabled, self.behavior_predictor.emb_dim, self.behavior_predictor.min_samples, self.behavior_predictor.max_samples, self.predictor_retrain_interval)
         logging.info('[RealEvalBudget] exact successful-evaluation target=%s', self.real_eval_budget)
         logging.info('[InitConfig] fixed_slots=%s seed_counts_as_slot=True sequential=True context_recent_evaluated=10 refill=False next=regions', self.init_unique_candidate_target)
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
         logging.info('[GenerationConfig] llm_batch=%s llm_workers=%s', self.llm_batch_generation_enabled, self.llm_max_workers)
-        logging.info('[BehaviorExploreConfig] enabled=%s rounds=%s candidates_per_round=%s eval_batch_per_round=%s parent_counts=%s completion=fixed_rounds_no_refill', self.behavior_explore_enabled, self.behavior_explore_rounds, self.behavior_explore_candidates, self.behavior_explore_eval_batch_size, self.behavior_explore_parent_counts)
         logging.info('[BehaviorOperatorConfig] regional_parents=single_and_pair BX=farthest BR=nearest fallback_bx_parent_counts=%s fallback_tau=%s', self.behavior_expand_parent_counts, self.bx_parent_selection_tau)
         logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s start=initialization_complete rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
@@ -191,24 +176,11 @@ class SearchEngine:
     def get_successful_real_eval_count(self):
         return int(self.successful_real_eval_count)
 
-    def should_run_behavior_exploration(self):
-        return bool(self.behavior_explore_enabled and self._behavior_explore_rounds_completed < self.behavior_explore_rounds and (not self.is_real_eval_budget_exhausted()))
 
-    def get_behavior_exploration_round(self):
-        if not self.should_run_behavior_exploration():
-            return None
-        return (self._behavior_explore_rounds_completed + 1, self.behavior_explore_rounds)
 
-    def complete_behavior_exploration_round(self):
-        if self._behavior_explore_rounds_completed >= self.behavior_explore_rounds:
-            return True
-        self._behavior_explore_rounds_completed += 1
-        complete = self._behavior_explore_rounds_completed >= self.behavior_explore_rounds
-        logging.info('[BehaviorExploreRound] completed=%s/%s successful_evals=%s complete=%s refill=disabled', self._behavior_explore_rounds_completed, self.behavior_explore_rounds, self.get_successful_real_eval_count(), complete)
-        return complete
 
     def should_use_regions(self):
-        return bool(self.region_enabled and getattr(self, '_initialization_complete', False) and self._behavior_explore_parent_archive and (not self.is_real_eval_budget_exhausted()))
+        return bool(self.region_enabled and getattr(self, '_initialization_complete', False) and self._evaluated_algorithm_history and (not self.is_real_eval_budget_exhausted()))
 
     def _region_generation_profiles(self, states=None):
         """Describe regions while assigning an equal generation share."""
@@ -382,7 +354,7 @@ class SearchEngine:
             off = self._candidate_to_offspring(cand)
             code = off.get('code', '')
             code_hash = str(abs(hash(self._canonical_code(code))))[-12:]
-            source = {'region': 'region', 'advantage_archive': 'archive', 'behavior_exploration': 'explore'}.get(off.get('generation_parent_scope'), '-')
+            source = {'region': 'region', 'advantage_archive': 'archive'}.get(off.get('generation_parent_scope'), '-')
             logging.debug('[BehaviorRank] %4d %3s %3s %6s %9s %12s', rank, '*' if id(cand) in selected_ids else '', off.get('region_allocation_id', '-'), source, self._fmt_float(off.get('behavior_pred_score')), code_hash)
 
     def _log_post_eval_rankings(self, evaluated_candidates):
@@ -636,7 +608,7 @@ class SearchEngine:
             return False
         if self.behavior_filter_start_with_predictor and self._behavior_filter_predictor_ready_for_batch is False:
             return False
-        if self.get_successful_real_eval_count() < self.surrogate_start_successful_evals:
+        if self.get_successful_real_eval_count() < self.behavior_predictor.min_samples:
             return False
         ready = False
         if self.behavior_predictor.get_sample_count() >= self.behavior_predictor.min_samples:
@@ -707,7 +679,7 @@ class SearchEngine:
         predictor = getattr(self, 'behavior_predictor', None)
         if not getattr(self, 'surrogate_selection_enabled', False) or predictor is None or getattr(predictor, 'surrogate_model', None) != 'xgboost_direct':
             return False
-        if self.get_successful_real_eval_count() < int(getattr(self, 'surrogate_start_successful_evals', 50)):
+        if self.get_successful_real_eval_count() < int(self.behavior_predictor.min_samples):
             return False
         if predictor.get_sample_count() < int(predictor.min_samples):
             return False
@@ -742,7 +714,7 @@ class SearchEngine:
         self._behavior_filter_predictor_ready_for_batch = bool(predictor_ready)
         if not predictor_ready:
             predictor = getattr(self, 'behavior_predictor', None)
-            logging.info('[BehaviorDuplicateFilter] waiting for XGBoost; pass through input=%s successful_evals=%s/%s samples=%s/%s', len(candidates), self.get_successful_real_eval_count(), int(getattr(self, 'surrogate_start_successful_evals', 50)), predictor.get_sample_count() if predictor is not None else 0, getattr(predictor, 'min_samples', 0))
+            logging.info('[BehaviorDuplicateFilter] waiting for XGBoost; pass through input=%s successful_evals=%s/%s samples=%s/%s', len(candidates), self.get_successful_real_eval_count(), int(self.behavior_predictor.min_samples), predictor.get_sample_count() if predictor is not None else 0, getattr(predictor, 'min_samples', 0))
             return (candidates, [])
         history_features = list(getattr(self.behavior_predictor, '_X', []))
         history_codes = list(getattr(self.behavior_predictor, '_codes', []))
@@ -972,54 +944,6 @@ class SearchEngine:
             distances /= math.sqrt(matrix.shape[1])
         return distances
 
-    def _select_cold_start_diverse_candidates(self, candidates, target_size):
-        """Select a max-min behavior batch against history and this candidate pool."""
-        if not candidates or target_size <= 0:
-            return []
-        valid_candidates = []
-        candidate_rows = []
-        feature_dim = None
-        for candidate in candidates:
-            offspring = self._candidate_to_offspring(candidate)
-            feature = offspring.get('behavior_embedding', offspring.get('embedding'))
-            if feature is None:
-                continue
-            row = np.asarray(feature, dtype=np.float64).reshape(-1)
-            if row.size == 0 or not np.all(np.isfinite(row)):
-                continue
-            if feature_dim is None:
-                feature_dim = int(row.size)
-            if row.size != feature_dim:
-                continue
-            valid_candidates.append(candidate)
-            candidate_rows.append(row)
-        if not valid_candidates:
-            return []
-        target_size = min(max(1, int(target_size)), len(valid_candidates))
-        archive_rows = []
-        archive_source = list(getattr(self.behavior_predictor, '_X', []))
-        if self.cold_start_reference_window > 0:
-            archive_source = archive_source[-self.cold_start_reference_window:]
-        else:
-            archive_source = []
-        for feature in archive_source:
-            row = np.asarray(feature, dtype=np.float64).reshape(-1)
-            if row.size == feature_dim and row.size > 0 and np.all(np.isfinite(row)):
-                archive_rows.append(row)
-        combined_rows = archive_rows + candidate_rows
-        standardized = self._robust_standardize_features(np.vstack(combined_rows))
-        distances = self._pairwise_euclidean_distances(standardized)
-        archive_count = len(archive_rows)
-        candidate_indices = list(range(archive_count, archive_count + len(valid_candidates)))
-        reference_indices = list(range(archive_count))
-        selected_global_indices = self._maxmin_select_indices(distances, target_size=target_size, candidate_indices=candidate_indices, selected_indices=reference_indices)
-        selected = [valid_candidates[index - archive_count] for index in selected_global_indices]
-        selected_ids = {id(candidate) for candidate in selected}
-        for candidate in valid_candidates:
-            offspring = self._candidate_to_offspring(candidate)
-            offspring['cold_start_diversity_selected'] = id(candidate) in selected_ids
-        logging.info('[ColdStartDiversity] successful_evals=%s/%s candidates=%s archive_references=%s selected=%s feature_dim=%s', self.get_successful_real_eval_count(), self.cold_start_diversity_evals, len(valid_candidates), archive_count, len(selected), feature_dim)
-        return selected
 
     @staticmethod
     def _maxmin_select_indices(distance_matrix, target_size, candidate_indices=None, selected_indices=None):
@@ -1068,7 +992,7 @@ class SearchEngine:
         rows = []
         objectives = []
         feature_dim = None
-        for record in self._behavior_explore_parent_archive:
+        for record in self._evaluated_algorithm_history:
             if not isinstance(record, dict):
                 continue
             feature = record.get('behavior_embedding', record.get('embedding'))
@@ -1092,7 +1016,7 @@ class SearchEngine:
     def _region_advantage_archive_rows(self):
         merged = []
         seen_codes = set()
-        for record in self._behavior_explore_parent_archive:
+        for record in self._evaluated_algorithm_history:
             if not isinstance(record, dict):
                 continue
             code_key = self._canonical_code(record.get('code'))
@@ -1366,13 +1290,10 @@ class SearchEngine:
             return None
         return {'center_algorithm_id': algorithm_id, 'center_code': code, 'center_feature': feature.copy(), 'best_objective': float(values[best_index]), 'generated_order': record.get('generated_order'), 'operator': record.get('operator')}
 
-    def rebuild_regions_after_behavior_exploration(self, force=False, reason='behavior_exploration_complete'):
-        """Rebuild local regions after behavior exploration has been archived."""
-        force = bool(force)
-        reason = str(reason or 'behavior_exploration_complete')
-        if self._behavior_exploration_regions_rebuilt and (not force):
-            return bool(self._region_states)
-        if not self.region_enabled or (self.should_run_behavior_exploration() and (not force)) or self.is_real_eval_budget_exhausted():
+    def _rebuild_regions_from_archive(self, reason):
+        """Recluster the current evaluated advantage archive."""
+        reason = str(reason)
+        if not self.region_enabled or self.is_real_eval_budget_exhausted():
             return False
         records, matrix, objectives = self._region_advantage_archive_rows()
         if matrix is None or len(records) < self.region_count:
@@ -1395,7 +1316,6 @@ class SearchEngine:
             self._sync_region_snapshot()
             logging.warning('[BehaviorRegionKMeansRebuild] retained previous regions: the latest archive could not form K valid behavior clusters')
         if rebuilt:
-            self._behavior_exploration_regions_rebuilt = True
             logging.info('[RegionRebuild] completed | reason=%s successful_evals=%s archive=%s previous_regions=%s new_regions=%s fit_samples=%s retained_global_best_center=%s retained_global_best_objective=%s', reason, self.get_successful_real_eval_count(), len(records), previous_region_count, len(self._region_states), self._region_fit_count, retained_center_state.get('center_algorithm_id') if retained_center_state else None, retained_center_state.get('best_objective') if retained_center_state else None)
         return bool(rebuilt)
 
@@ -1405,7 +1325,7 @@ class SearchEngine:
         if not reason_rows:
             return False
         reason = 'kmeans_stagnation:' + ','.join(sorted(set(reason_rows)))
-        rebuilt = self.rebuild_regions_after_behavior_exploration(force=True, reason=reason)
+        rebuilt = self._rebuild_regions_from_archive(reason=reason)
         if rebuilt:
             self._kmeans_full_rebuild_count += 1
             for state in self._region_states:
@@ -1566,7 +1486,7 @@ class SearchEngine:
             else:
                 logging.info('[PredictorArchive] added=%s total=%s model=disabled', len(samples_to_add), self.behavior_predictor.get_sample_count())
 
-    def _archive_behavior_explore_parents(self, evaluated_candidates):
+    def _archive_evaluated_algorithms(self, evaluated_candidates):
         added = 0
         for candidate in evaluated_candidates or []:
             offspring = self._candidate_to_offspring(candidate)
@@ -1575,13 +1495,13 @@ class SearchEngine:
             code_key = self._canonical_code(offspring.get('code'))
             objective = self._safe_objective(offspring.get('objective'))
             feature = offspring.get('behavior_embedding', offspring.get('embedding'))
-            if not code_key or code_key in self._behavior_explore_parent_codes or (not np.isfinite(objective)) or self._behavior_feature_failed(feature):
+            if not code_key or code_key in self._evaluated_algorithm_codes or (not np.isfinite(objective)) or self._behavior_feature_failed(feature):
                 continue
-            self._behavior_explore_parent_archive.append(dict(offspring))
-            self._behavior_explore_parent_codes.add(code_key)
+            self._evaluated_algorithm_history.append(dict(offspring))
+            self._evaluated_algorithm_codes.add(code_key)
             added += 1
         if added:
-            logging.info('[BehaviorExploreArchive] added=%s total=%s', added, len(self._behavior_explore_parent_archive))
+            logging.info('[EvaluatedAlgorithmHistory] added=%s total=%s', added, len(self._evaluated_algorithm_history))
 
     def _evaluate_candidates(self, candidates, pop=None, iteration=0, region_fresh_counts=None, region_scheduled_ids=None):
         if not candidates:
@@ -1733,13 +1653,11 @@ class SearchEngine:
         self._log_post_eval_rankings(representatives)
         regions_were_active = bool(self._region_states)
         self._archive_predictor_samples(representatives, pop=pop)
-        self._archive_behavior_explore_parents(representatives)
+        self._archive_evaluated_algorithms(representatives)
         if regions_were_active:
             self._update_regions_after_evaluation(representatives, fresh_candidate_counts=region_fresh_counts, scheduled_region_ids=region_scheduled_ids)
         else:
-            waiting_for_behavior_escape_rebuild = bool(self.behavior_explore_enabled and (not self._behavior_exploration_regions_rebuilt) and (self._behavior_explore_rounds_completed < self.behavior_explore_rounds))
-            if not waiting_for_behavior_escape_rebuild:
-                self._initialize_regions()
+            self._initialize_regions()
         self._last_n_evaluated = len(eval_candidates)
         self._last_n_eval_skipped = skipped_feature_failed + skipped_same_batch + skipped_existing + len(deferred_by_budget)
         return representatives
@@ -1912,7 +1830,7 @@ class SearchEngine:
                 exit()
         self._attach_behavior_features([(None, ind) for ind in population])
         self._archive_predictor_samples([(None, ind) for ind in population], pop=[])
-        self._archive_behavior_explore_parents([(None, ind) for ind in population])
+        self._archive_evaluated_algorithms([(None, ind) for ind in population])
         for individual in population:
             individual['lineage_status'] = individual.get('evaluation_status', 'seed_loaded')
         self._finalize_lineage_candidates([(None, ind) for ind in population])
@@ -1934,11 +1852,6 @@ class SearchEngine:
             parents = self._sample_operator_parents(pop, operator)
             self._claim_generated_algorithm_slots(1, context=f'serial_{operator}')
             [offspring['code'], offspring['algorithm']] = self.evol.br(parents)
-        elif operator in BEHAVIOR_ESCAPE_OPERATORS:
-            parents = self._sample_operator_parents(pop, operator)
-            offspring['generation_parent_scope'] = 'behavior_exploration'
-            self._claim_generated_algorithm_slots(1, context=f'serial_{operator}')
-            [offspring['code'], offspring['algorithm']] = self.evol.be(parents)
         else:
             print(f'Evolution operator [{operator}] has not been implemented ! \n')
             parents = None
@@ -1953,12 +1866,6 @@ class SearchEngine:
     def _sample_operator_parents(self, pop, operator):
         if operator == 'i1':
             return None
-        if operator in BEHAVIOR_ESCAPE_OPERATORS:
-            batches = self._build_behavior_explore_parent_batches(pop, batch_size=1, start_index=self._behavior_explore_parent_cursor)
-            self._behavior_explore_parent_cursor += 1
-            if not batches:
-                raise RuntimeError('No unused behavior-exploration parent set remains')
-            return batches[0]
         if operator in STANDARD_BEHAVIOR_OPERATORS:
             batches = self._build_archive_parent_batches(pop, operator, batch_size=1)
             if batches:
@@ -2583,87 +2490,6 @@ class SearchEngine:
         logging.info('[ArchiveParents] operator=%s candidates=%s unique_parent_sets=%s parent_count_histogram=%s elite_in_first_batch=%s elite_objective=%.6g behavior_diverse=%s selection=%s', operator, len(batches), len(batches), {count: sum((len(parents) == count for parents in batches)) for count in sorted({len(parents) for parents in batches})}, bool(batches and elite_code in self._parent_batch_signature(batches[0])), self._safe_objective(elite_parent.get('objective')), valid_geometry, 'best_anchor_plus_nearby_contrast' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_max_min')
         return batches
 
-    def _build_behavior_explore_parent_batches(self, pop, batch_size, start_index=0):
-        """Build behavior-diverse parent groups for initialization BE."""
-        parent_pool = []
-        seen_parent_codes = set()
-        source_parents = self._behavior_explore_parent_archive + list(pop or [])
-        for parent in source_parents:
-            if not isinstance(parent, dict):
-                continue
-            code_key = self._canonical_code(parent.get('code'))
-            if not code_key or code_key in seen_parent_codes:
-                continue
-            seen_parent_codes.add(code_key)
-            parent_pool.append(parent)
-        if not parent_pool:
-            raise ValueError('Behavior exploration requires at least one valid parent')
-        original_parent_count = len(parent_pool)
-        valid_parents = []
-        behavior_rows = []
-        behavior_dim = None
-        for parent in parent_pool:
-            feature = parent.get('behavior_embedding', parent.get('embedding'))
-            if feature is None:
-                continue
-            row = np.asarray(feature, dtype=np.float64).reshape(-1)
-            if row.size == 0 or not np.all(np.isfinite(row)):
-                continue
-            if behavior_dim is None:
-                behavior_dim = int(row.size)
-            if row.size != behavior_dim:
-                continue
-            valid_parents.append(parent)
-            behavior_rows.append(row)
-        if valid_parents:
-            parent_pool = valid_parents
-            standardized = self._robust_standardize_features(np.vstack(behavior_rows))
-            distances = self._pairwise_euclidean_distances(standardized)
-            diversity_order = self._maxmin_select_indices(distances, target_size=len(parent_pool))
-        else:
-            distances = None
-            diversity_order = sorted(range(len(parent_pool)), key=lambda index: (self._safe_objective(parent_pool[index].get('objective')), int(index)))
-            logging.warning('[BehaviorExploreParents] No valid parent behavior features; falling back to objective-ordered current population.')
-        parent_counts = self.behavior_explore_parent_counts
-        batches = []
-        count_histogram = {}
-        group_distance_means = []
-        n_parents = len(parent_pool)
-        local_index = 0
-        max_attempts = max(32, int(batch_size) * 32)
-        while len(batches) < max(0, int(batch_size)) and local_index < max_attempts:
-            batch_index = int(start_index) + local_index
-            local_index += 1
-            desired_count = parent_counts[batch_index % len(parent_counts)]
-            parent_count = min(max(1, int(desired_count)), n_parents)
-            anchor = diversity_order[batch_index % len(diversity_order)]
-            selected_indices = [anchor]
-            while len(selected_indices) < parent_count:
-                remaining = [index for index in diversity_order if index not in selected_indices]
-                if not remaining:
-                    break
-                if distances is None:
-                    next_index = remaining[(batch_index + len(selected_indices) - 1) % len(remaining)]
-                else:
-                    ranked_remaining = sorted(remaining, key=lambda index: float(np.min(distances[index, selected_indices])), reverse=True)
-                    top_width = min(3, len(ranked_remaining))
-                    variant = (batch_index // max(1, n_parents) + len(selected_indices) - 1) % top_width
-                    next_index = ranked_remaining[variant]
-                selected_indices.append(next_index)
-            parents = [parent_pool[index] for index in selected_indices]
-            if not self._register_parent_batch(parents):
-                continue
-            batches.append(parents)
-            actual_count = len(selected_indices)
-            count_histogram[actual_count] = count_histogram.get(actual_count, 0) + 1
-            if distances is not None and actual_count > 1:
-                pair_values = [float(distances[left, right]) for pos, left in enumerate(selected_indices) for right in selected_indices[pos + 1:]]
-                if pair_values:
-                    group_distance_means.append(float(np.mean(pair_values)))
-        if len(batches) < int(batch_size):
-            logging.warning('[BehaviorExploreParents] only %s/%s non-repeating parent sets available', len(batches), batch_size)
-        logging.info('[BehaviorExploreParents] strategy=%s candidates=%s behavior_parents=%s/%s parent_count_histogram=%s mean_group_distance=%s', 'behavior_max_min', len(batches), len(valid_parents), original_parent_count, count_histogram, f'{float(np.mean(group_distance_means)):.6g}' if group_distance_means else 'n/a')
-        return batches
 
     def get_offspring_batch(self, pop, operator, batch_size, parent_scope='auto'):
         """Generate one operator batch concurrently and register lineage serially."""
@@ -2682,10 +2508,6 @@ class SearchEngine:
         elif operator == 'i1':
             parent_batches = [None for _ in range(batch_size)]
             generation_parent_scope = 'initialization'
-        elif operator in BEHAVIOR_ESCAPE_OPERATORS:
-            parent_batches = self._build_behavior_explore_parent_batches(pop, batch_size=batch_size, start_index=self._behavior_explore_parent_cursor)
-            self._behavior_explore_parent_cursor += batch_size
-            generation_parent_scope = 'behavior_exploration'
         else:
             parent_batches = [self._sample_operator_parents(pop, operator) for _ in range(batch_size)]
             generation_parent_scope = 'advantage_archive'
@@ -2836,9 +2658,8 @@ class SearchEngine:
             return ([], [])
         offspring_list = []
         self._active_parent_batch_signatures = set()
-        predictor_has_enough_samples = self.surrogate_selection_enabled and self.get_successful_real_eval_count() >= self.surrogate_start_successful_evals and (self.behavior_predictor.get_sample_count() >= self.behavior_predictor.min_samples)
+        predictor_has_enough_samples = self.surrogate_selection_enabled and self.get_successful_real_eval_count() >= self.behavior_predictor.min_samples and (self.behavior_predictor.get_sample_count() >= self.behavior_predictor.min_samples)
         cur_fe = self.get_successful_real_eval_count()
-        behavior_explore_active = operator in BEHAVIOR_ESCAPE_OPERATORS and self.behavior_explore_enabled and self.should_run_behavior_exploration()
         mixed_round = operator == 'mixed'
         region_active = bool((mixed_round or operator in STANDARD_BEHAVIOR_OPERATORS) and self.should_use_regions() and self._initialize_regions())
         mixed_plan = None
@@ -2847,16 +2668,11 @@ class SearchEngine:
                 raise ValueError('Mixed regional generation requires initialized regions')
             mixed_plan = self._build_mixed_parent_plan(pop)
         self._bx_use_inter_region_this_round = False
-        cold_start_active = behavior_explore_active
         n_generate = len(self._region_advantage_archive_rows()[0])
         regional_generate_count = 0
         region_scheduled_ids = set()
         region_fresh_counts = {}
-        if behavior_explore_active:
-            n_generate = self.behavior_explore_candidates
-            round_info = self.get_behavior_exploration_round()
-            logging.info('[BehaviorExploreGeneration] round=%s/%s generate=%s eval_batch=%s successful_evals=%s refill=disabled', round_info[0] if round_info else 0, round_info[1] if round_info else self.behavior_explore_rounds, n_generate, self.behavior_explore_eval_batch_size, cur_fe)
-        elif mixed_round:
+        if mixed_round:
             n_generate = len(mixed_plan)
             regional_generate_count = n_generate
             region_scheduled_ids = {int(s['region_id']) for s in self._region_states}
@@ -2965,22 +2781,9 @@ class SearchEngine:
         ratio_slots = evaluation_slots(ratio_candidate_count, self.evaluation_ratio,
                                        remaining_budget, len(offspring_list))
         fallback_eval_count = ratio_slots
-        if not cold_start_active:
-            logging.info('[EvaluationRatio] ratio=%s denominator=valid_unique_fresh_before_behavior_filter N=%s available=%s B_total=%s remaining=%s',
-                         self.evaluation_ratio, ratio_candidate_count, len(offspring_list), ratio_slots, remaining_budget)
-        if cold_start_active:
-            diversity_eval_count = min(self.behavior_explore_eval_batch_size, len(offspring_list), remaining_budget)
-            diversity_start = time.perf_counter()
-            selected_candidates = self._select_cold_start_diverse_candidates(offspring_list, target_size=diversity_eval_count)
-            predictor_selection_time = time.perf_counter() - diversity_start
-            selected_ids = {id(candidate) for candidate in selected_candidates}
-            not_selected = [candidate for candidate in offspring_list if id(candidate) not in selected_ids]
-            self._set_lineage_status(selected_candidates, 'cold_start_diversity_selected', selected_for_evaluation=True, selected_by_predictor=False)
-            self._set_lineage_status(not_selected, 'cold_start_diversity_not_selected', selected_for_evaluation=False, selected_by_predictor=False)
-            offspring_list = selected_candidates
-            n_selected = len(offspring_list)
-            logging.info('[ColdStartDiversity] operator=%s generated=%s unique_pool=%s selected=%s fixed_round=%s/%s refill=disabled', operator, n_generate, n_unique_before_selection, n_selected, self._behavior_explore_rounds_completed + 1, self.behavior_explore_rounds)
-        elif region_active:
+        logging.info('[EvaluationRatio] ratio=%s denominator=valid_unique_fresh_before_behavior_filter N=%s available=%s B_total=%s remaining=%s',
+                     self.evaluation_ratio, ratio_candidate_count, len(offspring_list), ratio_slots, remaining_budget)
+        if region_active:
             top_k = ratio_slots
             allocation_start = time.perf_counter()
             reserve_novelty_slot = bool(self.behavior_novelty_slot_enabled and top_k >= 2 and (len(offspring_list) > top_k))
@@ -3032,8 +2835,6 @@ class SearchEngine:
         else:
             self._set_lineage_status(offspring_list, 'random_selected', selected_for_evaluation=True, selected_by_predictor=False)
         evaluated = self._evaluate_candidates(offspring_list, pop=pop, iteration=0, region_fresh_counts=region_fresh_counts, region_scheduled_ids=region_scheduled_ids)
-        if cold_start_active and self.cold_start_visualize and self.run_output_path:
-            self.behavior_predictor.visualize_candidate_selection_batch(candidates=all_generated_candidates, save_dir=self.run_output_path, generation=self.current_generation, operator=operator, method=os.environ.get('BEMRS_VISUALIZE_METHOD', 'pca'))
         self._finalize_lineage_candidates(all_generated_candidates)
         self._append_timing_record({'event': 'operator_batch', 'operator': operator, 'n_generated': n_generate, 'n_candidates': before_filter, 'n_after_feature_filter': n_after_feature_filter, 'n_selected': n_selected, 'n_evaluated': getattr(self, '_last_n_evaluated', 0), 'n_skipped': n_pre_selection_deduped + n_already_evaluated_filtered + len(skipped_candidates) + len(behavior_duplicate_candidates) + (n_unique_before_selection - n_selected) + getattr(self, '_last_n_eval_skipped', 0), 'generation_batch_time': generation_batch_time, 'behavior_feature_batch_time': getattr(self, '_last_behavior_feature_batch_time', 0.0), 'embedding_batch_time': getattr(self, '_last_embedding_batch_time', 0.0), 'predictor_selection_time': predictor_selection_time, 'real_eval_batch_time': getattr(self, '_last_real_eval_batch_time', 0.0)})
         out_p = []

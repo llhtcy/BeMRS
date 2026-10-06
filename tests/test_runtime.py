@@ -13,6 +13,48 @@ from bemrs import BeMRS
 from main import ROOT, isolated_workspace
 
 class RuntimeTests(unittest.TestCase):
+    def test_predictor_uses_one_configurable_threshold(self):
+        from unittest.mock import Mock
+        from bemrs.runtime_config import apply_runtime_config
+        with initialize_config_dir(config_dir=str(ROOT/'cfg'), version_base=None):
+            cfg = compose(config_name='config', overrides=['method.predictor.min_samples=7'])
+        self.assertNotIn('cold_start', cfg.method)
+        self.assertNotIn('behavior_explore', cfg.method)
+        self.assertNotIn('start_successful_evals', cfg.method.predictor)
+        with patch.dict(os.environ, {}, clear=True):
+            applied = apply_runtime_config(cfg)
+            self.assertEqual(applied['BEMRS_PREDICTOR_MIN_SAMPLES'], '7')
+            self.assertFalse(any('COLD_START' in k or 'BEHAVIOR_EXPLORE' in k or
+                                 'SURROGATE_START' in k for k in applied))
+        engine = SearchEngine.__new__(SearchEngine)
+        engine.surrogate_selection_enabled = True
+        engine.behavior_filter_start_with_predictor = False
+        engine.behavior_predictor = Mock(min_samples=7)
+        engine.get_successful_real_eval_count = Mock(return_value=6)
+        engine.behavior_predictor.get_sample_count.return_value = 7
+        engine._train_predictor_if_needed = Mock(return_value=True)
+        self.assertFalse(engine._ensure_surrogate())
+        engine.get_successful_real_eval_count.return_value = 7
+        engine.behavior_predictor.get_sample_count.return_value = 6
+        self.assertFalse(engine._ensure_surrogate())
+        engine._train_predictor_if_needed.assert_not_called()
+        engine.behavior_predictor.get_sample_count.return_value = 7
+        self.assertTrue(engine._ensure_surrogate())
+        engine._train_predictor_if_needed.assert_called_once()
+        engine.behavior_filter_start_with_predictor = True
+        engine.behavior_predictor.surrogate_model = 'xgboost_direct'
+        engine.behavior_predictor.is_ready.return_value = True
+        engine._train_predictor_if_needed.reset_mock()
+        engine.get_successful_real_eval_count.return_value = 6
+        self.assertFalse(engine._behavior_filter_predictor_ready())
+        engine.get_successful_real_eval_count.return_value = 7
+        engine.behavior_predictor.get_sample_count.return_value = 6
+        self.assertFalse(engine._behavior_filter_predictor_ready())
+        engine._train_predictor_if_needed.assert_not_called()
+        engine.behavior_predictor.get_sample_count.return_value = 7
+        self.assertTrue(engine._behavior_filter_predictor_ready())
+
+
     def test_initialization_fixed_slots_and_successful_context(self):
         from unittest.mock import Mock
         engine = SearchEngine.__new__(SearchEngine)
@@ -94,7 +136,7 @@ class RuntimeTests(unittest.TestCase):
             os.chdir(tmp)
             try:
                 with initialize_config_dir(version_base=None,config_dir=str(ROOT/'cfg')):
-                    cfg=compose(config_name='config',overrides=[f'max_fe={budget}',f'method.region.enabled={str(regions).lower()}','method.visualization.enabled=false','method.cold_start.visualize=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
+                    cfg=compose(config_name='config',overrides=[f'max_fe={budget}',f'method.region.enabled={str(regions).lower()}','method.visualization.enabled=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
                 self.assertNotIn('pop_size', cfg)
                 workspace=isolated_workspace(Path(tmp))
                 with patch('bemrs.core.engine.build_behavior_embedder',return_value=Encoder()),patch.object(InterfaceAPI,'get_responses',responses),patch.object(Problem,'batch_evaluate',evaluate):
