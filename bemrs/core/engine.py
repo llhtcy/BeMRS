@@ -1109,7 +1109,7 @@ class SearchEngine:
         if not merged:
             return ([], None, None)
         merged.sort(key=lambda item: item[2])
-        target_distinct = max(int(self.region_count), int(self.region_archive_target_distinct))
+        target_distinct = int(self.region_archive_target_distinct)
         selected = []
         distinct_scores = set()
         cutoff_score = None
@@ -1117,16 +1117,17 @@ class SearchEngine:
         for record, row, objective in merged:
             if row.size != feature_dim:
                 continue
-            if cutoff_score is not None and objective != cutoff_score:
-                break
+            if objective in distinct_scores:
+                continue
             selected.append((record, row, objective))
             distinct_scores.add(objective)
             if len(distinct_scores) >= target_distinct:
                 cutoff_score = objective
+                break
         records = [item[0] for item in selected]
         matrix = np.vstack([item[1] for item in selected])
         objectives = np.asarray([item[2] for item in selected], dtype=np.float64)
-        logging.info('[RegionAdvantageArchive] records=%s distinct_scores=%s target_distinct=%s cutoff=%s total_archive=%s', len(records), len(distinct_scores), target_distinct, f'{cutoff_score:.6g}' if cutoff_score is not None else 'all', len(merged))
+        logging.info('[RegionAdvantageArchive] records=%s distinct_scores=%s target_distinct=%s cutoff=%s total_archive=%s policy=strict_unique_score_cap', len(records), len(distinct_scores), target_distinct, f'{cutoff_score:.6g}' if cutoff_score is not None else 'all', len(merged))
         return (records, matrix, objectives)
 
     def _transform_region_features(self, features):

@@ -6,6 +6,25 @@ from bemrs.core.engine import SearchEngine
 
 
 class RegionTests(unittest.TestCase):
+    def test_archive_strict_distinct_score_cap(self):
+        engine = SearchEngine.__new__(SearchEngine)
+        engine.region_count = 3
+        engine.region_archive_target_distinct = 24
+        engine._behavior_explore_parent_archive = [
+            dict(code=f'code_{score}_{copy}', objective=float(score),
+                 behavior_embedding=np.array([score, copy], float))
+            for score in reversed(range(30)) for copy in range(3)]
+        records, matrix, objectives = engine._region_advantage_archive_rows()
+        self.assertEqual(len(records), 24)
+        np.testing.assert_array_equal(objectives, np.arange(24))
+        self.assertEqual(matrix.shape, (24, 2))
+        engine._behavior_explore_parent_archive = engine._behavior_explore_parent_archive[-6:]
+        records, _, objectives = engine._region_advantage_archive_rows()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len(set(objectives)), 2)
+        engine.region_archive_target_distinct = 1
+        self.assertEqual(len(engine._region_advantage_archive_rows()[0]), 1)
+
     def engine(self):
         engine = SearchEngine.__new__(SearchEngine)
         engine.current_generation = 1

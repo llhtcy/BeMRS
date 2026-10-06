@@ -32,7 +32,11 @@ share the same duplicate key; no extra reversal pass is made.
 The same pair may be used by BX and BR. Duplicate membership from fallback pools
 is resolved by stable region order. Existing parent-pool code/score deduplication
 and anchor inclusion remain unchanged; the archive target is not an exact count
-of available parents. Failed generation is not refilled with extra parent pairs.
+of available parents (regional anchor references are maintained separately).
+The advantage archive itself strictly retains at most archive_target_distinct
+algorithms, one per observed objective, ordered by real performance. Ties do not
+expand its capacity; fewer distinct scores leave the archive below capacity.
+Failed generation is not refilled with extra parent pairs.
 The existing global generated-algorithm safety limit may truncate a plan.
 
 With region parent counts \`n_r\`, BX has an upper bound of
