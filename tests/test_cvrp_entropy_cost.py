@@ -18,7 +18,7 @@ DATASET = ROOT / 'problems/cvrp_aco/dataset/train50_dataset.npy'
 
 def make_encoder(**kwargs):
     options = dict(n_matrices=2, n_customers=50, seed=1111,
-                   instance_pooling='mean', probe_mode='random_stratified', probes_per_stage=12)
+                   instance_pooling='mean', probe_mode='random_stratified', probes_per_stage=4)
     options.update(kwargs)
     return CVRPACOBehaviorEmbedder(DATASET, **options)
 
@@ -27,12 +27,12 @@ class CVRPProbeTests(unittest.TestCase):
     def test_balanced_unique_and_reachable_for_all_three_seeds(self):
         with patch.dict(os.environ, {}, clear=True):
             for seed in (1111, 2222, 3333):
-                encoder = make_encoder(n_matrices=8, seed=seed)
+                encoder = make_encoder(n_matrices=5, seed=seed)
                 for instance, states in zip(encoder._instances, encoder._state_banks):
-                    self.assertEqual(len(states), 36)
+                    self.assertEqual(len(states), 12)
                     self.assertEqual([sum(s['probe_layer'] == k for s in states) for k in range(3)],
-                                     [12, 12, 12])
-                    self.assertEqual(len({s['decision_key'] for s in states}), 36)
+                                     [4, 4, 4])
+                    self.assertEqual(len({s['decision_key'] for s in states}), 12)
                     demand = instance['demand']
                     for state in states:
                         served, current, used = set(), 0, 0.0
@@ -78,6 +78,14 @@ class CVRPProbeTests(unittest.TestCase):
         self.assertEqual(len(encoder._state_banks[0]), 36)
         self.assertTrue(all(s['current'] != 0 for s in encoder._state_banks[0]))
 
+    def test_constructor_defaults_match_sixty_probe_config(self):
+        with patch.dict(os.environ, {}, clear=True):
+            encoder = CVRPACOBehaviorEmbedder(DATASET)
+        self.assertEqual(encoder.probe_mode, 'random_stratified')
+        self.assertEqual(encoder.n_matrices, 5)
+        self.assertEqual(encoder.probes_per_stage, 4)
+        self.assertEqual([len(bank) for bank in encoder._state_banks], [12]*5)
+
 
 class CVRPFeatureTests(unittest.TestCase):
     @classmethod
@@ -116,7 +124,7 @@ class CVRPFeatureTests(unittest.TestCase):
         self.assertEqual(self.five.feature_names, NAMES)
         np.testing.assert_allclose(feature[[0, 2, 3, 4]], old[[6, 0, 1, 2]], atol=1e-6)
         self.assertGreater(feature[1], 0)
-        self.assertEqual(self.five.last_diagnostics['probes'], 72)
+        self.assertEqual(self.five.last_diagnostics['probes'], 24)
 
     def test_one_call_per_instance_and_uniform_entropy(self):
         function = Mock(side_effect=lambda distance, coordinates, demand, capacity: np.ones_like(distance))
@@ -148,11 +156,11 @@ class CVRPFeatureTests(unittest.TestCase):
             encoder = build_behavior_embedder('cvrp_aco', 50, ROOT,
                                              behavior_matrices=cfg.problem.behavior.matrices)
         self.assertEqual(runtime['BEMRS_CVRP_PROBE_MODE'], 'random_stratified')
-        self.assertEqual(runtime['BEMRS_CVRP_PROBES_PER_STAGE'], '12')
+        self.assertEqual(runtime['BEMRS_CVRP_PROBES_PER_STAGE'], '4')
         self.assertEqual(encoder.output_dim, 5)
         self.assertEqual(encoder.probe_mode, 'random_stratified')
-        self.assertEqual(encoder.n_matrices, 8)
-        self.assertEqual(sum(map(len, encoder._state_banks)), 288)
+        self.assertEqual(encoder.n_matrices, 5)
+        self.assertEqual(sum(map(len, encoder._state_banks)), 60)
 
 
 if __name__ == '__main__':

@@ -5,10 +5,10 @@ problem_size: 50
 behavior:
   problem_size: 50
   dataset: problems/cvrp_aco/dataset/train50_dataset.npy
-  matrices: 8
+  matrices: 5
   capacity: 50.0
   probe_mode: random_stratified
-  probes_per_stage: 12
+  probes_per_stage: 4
   seed: ${seed}
   batch_size: 32
   heuristic_timeout: 0.5

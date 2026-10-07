@@ -186,7 +186,7 @@ class CVRPACOBehaviorEmbedder:
         self.n_matrices = int(
             n_matrices
             if n_matrices is not None
-            else os.environ.get("BEMRS_CVRP_BEHAVIOR_MATRICES", 8)
+            else os.environ.get("BEMRS_CVRP_BEHAVIOR_MATRICES", 5)
         )
         self.n_customers = int(
             n_customers
@@ -216,9 +216,9 @@ class CVRPACOBehaviorEmbedder:
             else os.environ.get("BEMRS_CVRP_PROBES_PER_CELL", 4)
         )
         self.probe_mode = str(probe_mode if probe_mode is not None else
-                              os.environ.get("BEMRS_CVRP_PROBE_MODE", "legacy")).lower()
+                              os.environ.get("BEMRS_CVRP_PROBE_MODE", "random_stratified")).lower()
         self.probes_per_stage = int(probes_per_stage if probes_per_stage is not None else
-                                   os.environ.get("BEMRS_CVRP_PROBES_PER_STAGE", 12))
+                                   os.environ.get("BEMRS_CVRP_PROBES_PER_STAGE", 4))
         self.seed = int(
             seed
             if seed is not None
