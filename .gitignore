@@ -10,3 +10,5 @@ checks/
 *.log
 *.pem
 *.key
+experiments/**/runs*/
+experiments/**/checks*/

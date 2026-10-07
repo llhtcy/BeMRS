@@ -89,7 +89,7 @@ def build_behavior_embedder(problem_name: str, problem_size: Optional[int]=None,
             dataset_path = root / 'problems' / 'cvrp_aco' / 'dataset' / f'train{behavior_nodes}_dataset.npy'
         else:
             raise ValueError('CVRP behavior extraction requires root_dir or BEMRS_CVRP_BEHAVIOR_DATASET.')
-        embedder = CVRPACOBehaviorEmbedder(dataset_path=dataset_path, n_matrices=behavior_matrices, n_customers=behavior_nodes, probes_per_cell=behavior_probes_per_cell, instance_pooling=behavior_instance_pooling, heuristic_timeout=behavior_heuristic_timeout, encode_timeout=behavior_encode_timeout)
+        embedder = CVRPACOBehaviorEmbedder(dataset_path=dataset_path, n_matrices=behavior_matrices, n_customers=behavior_nodes, probes_per_cell=behavior_probes_per_cell, probes_per_stage=behavior_probes_per_stage, instance_pooling=behavior_instance_pooling, heuristic_timeout=behavior_heuristic_timeout, encode_timeout=behavior_encode_timeout)
         logging.info('[BehaviorFactory] CVRP evaluation_nodes=%d behavior_nodes=%d', size, behavior_nodes)
     elif task == 'mkp_aco':
         try:
@@ -147,7 +147,16 @@ def build_behavior_embedder(problem_name: str, problem_size: Optional[int]=None,
     else:
         raise NotImplementedError(f'No task-specific behavior extractor is registered for {task!r}. Supported cfg.problem.problem_name values are: tsp_gls, tsp_constructive, cvrp_aco, mkp_aco, op_aco, bpp_online.')
     group = os.environ.get('BEMRS_FEATURE_GROUP', 'full')
-    if group == 'response3':
+    if group in ('entropy_time2', 'entropy_time_preferences5'):
+        if task == 'op_aco':
+            from .op_entropy_cost_behavior import OPEntropyCostEmbedder
+            embedder = OPEntropyCostEmbedder(embedder, group)
+        elif task == 'cvrp_aco':
+            from .cvrp_entropy_cost_behavior import CVRPEntropyCostEmbedder
+            embedder = CVRPEntropyCostEmbedder(embedder, group)
+        else:
+            raise ValueError('Entropy/cost groups implement OP and CVRP only')
+    elif group == 'response3':
         if task != 'op_aco':
             raise ValueError('response3 currently implements OP only')
         from .op_response_behavior import OPResponseBehaviorEmbedder

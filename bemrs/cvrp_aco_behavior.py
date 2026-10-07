@@ -88,11 +88,12 @@ def _hard_timeout(seconds):
     previous_trace = sys.gettrace()
 
     def trace_candidate(frame, event, arg):
-        if (
-            frame.f_code.co_filename == "<cvrp_candidate_heuristic>"
-            and time.monotonic() >= deadline
-        ):
-            raise CVRPBehaviorTimeout(f"heuristic exceeded {seconds:g} seconds")
+        if frame.f_code.co_filename == "<cvrp_candidate_heuristic>":
+            # A tight single-line loop may not emit repeated line events.
+            # Opcode events keep the timeout effective for that case too.
+            frame.f_trace_opcodes = True
+            if time.monotonic() >= deadline:
+                raise CVRPBehaviorTimeout(f"heuristic exceeded {seconds:g} seconds")
         return trace_candidate
 
     sys.settrace(trace_candidate)
@@ -175,6 +176,8 @@ class CVRPACOBehaviorEmbedder:
         heuristic_timeout: Optional[float] = None,
         encode_timeout: Optional[float] = None,
         instance_pooling: Optional[str] = None,
+        probe_mode: Optional[str] = None,
+        probes_per_stage: Optional[int] = None,
     ):
         self.dataset_path = Path(dataset_path).expanduser().resolve()
         if not self.dataset_path.is_file():
@@ -212,6 +215,10 @@ class CVRPACOBehaviorEmbedder:
             if probes_per_cell is not None
             else os.environ.get("BEMRS_CVRP_PROBES_PER_CELL", 4)
         )
+        self.probe_mode = str(probe_mode if probe_mode is not None else
+                              os.environ.get("BEMRS_CVRP_PROBE_MODE", "legacy")).lower()
+        self.probes_per_stage = int(probes_per_stage if probes_per_stage is not None else
+                                   os.environ.get("BEMRS_CVRP_PROBES_PER_STAGE", 12))
         self.seed = int(
             seed
             if seed is not None
@@ -249,6 +256,8 @@ class CVRPACOBehaviorEmbedder:
             if self.instance_pooling == "mean"
             else "cvrp_aco_policy_trend15_v1"
         )
+        if self.probe_mode == "random_stratified":
+            self.extractor_version += "_random_stratified"
         self.extractor_description = (
             "Fifteen paired capacity-, depot-, demand-, and route-stage-conditioned policy "
             "trends "
@@ -258,6 +267,8 @@ class CVRPACOBehaviorEmbedder:
                 else "for each fixed CVRP training instance."
             )
         )
+        if self.probe_mode == "random_stratified":
+            self.extractor_description += " Uniformly stratified reachable random-route probes."
         logging.info(
             "[BehaviorEmbedder] Ready | task=cvrp_aco extractor=%s dataset=%s "
             "matrices=%d customers=%d states_per_matrix=%d pooling=%s output_dim=%d "
@@ -282,6 +293,12 @@ class CVRPACOBehaviorEmbedder:
             raise ValueError("BEMRS_CVRP_CAPACITY must be positive.")
         if self.probes_per_cell < 1:
             raise ValueError("BEMRS_CVRP_PROBES_PER_CELL must be positive.")
+        if self.probe_mode not in ("legacy", "random_stratified"):
+            raise ValueError("CVRP probe_mode must be legacy or random_stratified.")
+        if self.probes_per_stage < 1:
+            raise ValueError("CVRP probes_per_stage must be positive.")
+        if self.probe_mode == "random_stratified" and (len(self.stage_ratios) != 3 or len(self.load_ratios) != 3):
+            raise ValueError("Random stratified CVRP probes use exactly three progress/load bins.")
         if len(self.stage_ratios) < 2 or any(not 0.0 < value <= 1.0 for value in self.stage_ratios):
             raise ValueError("CVRP stage ratios require at least two values in (0, 1].")
         if len(self.load_ratios) < 2 or any(not 0.0 <= value < 1.0 for value in self.load_ratios):
@@ -318,6 +335,9 @@ class CVRPACOBehaviorEmbedder:
         return instances
 
     def _make_fixed_states(self, instance, seed):
+        if self.probe_mode == "random_stratified":
+            from .cvrp_random_states import make_stratified_states
+            return make_stratified_states(self, instance, seed)
         customers = np.arange(1, len(instance["demand"]), dtype=int)
         rng = np.random.default_rng(int(seed))
         states = []
@@ -416,7 +436,10 @@ class CVRPACOBehaviorEmbedder:
         unvisited = np.asarray(state["unvisited"], dtype=int)
         remaining = max(0.0, self.capacity * (1.0 - state["used_capacity_ratio"]))
 
-        visit_actions = np.concatenate((np.array([0], dtype=int), unvisited))
+        # Match the evaluator's legal-action mask: no depot-to-depot action
+        # while customers remain. Legacy probes always have current != 0.
+        visit_actions = (np.concatenate((np.array([0], dtype=int), unvisited))
+                         if current != 0 else unvisited)
         prior = _distribution(heuristic[current, visit_actions])
         infeasible = (visit_actions != 0) & (demand[visit_actions] > remaining + 1e-12)
         infeasible_mass = float(np.sum(prior[infeasible]))

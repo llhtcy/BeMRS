@@ -7,20 +7,13 @@ behavior:
   dataset: problems/cvrp_aco/dataset/train50_dataset.npy
   matrices: 8
   capacity: 50.0
-  stage_ratios:
-  - 0.8
-  - 0.5
-  - 0.2
-  load_ratios:
-  - 0.1
-  - 0.5
-  - 0.85
-  probes_per_cell: 4
+  probe_mode: random_stratified
+  probes_per_stage: 12
   seed: ${seed}
   batch_size: 32
   heuristic_timeout: 0.5
   encode_timeout: 5.0
-  feature_group: mean
+  feature_group: entropy_time_preferences5
 operators:
   expand_parent_counts:
   - 1

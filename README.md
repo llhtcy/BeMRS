@@ -34,7 +34,7 @@ python main.py problem=tsp_constructive seed=1111
 
 | 参数 | 默认 |
 |---|---|
-| OP / MKP / CVRP 特征 | Mean 6D / 7D / 7D |
+| OP / MKP / CVRP 特征 | Mean 6D / 7D / 熵＋耗时＋三种偏好 5D |
 | TSP-GLS / TSP 构造特征 | compact12 / 原有72D |
 | 优势档案 | 严格最多24个不同分数的算法，每个分数仅保留一个；初始化名额随档案目标变化，无独立全局种群 |
 | 区域 / 子代生成 | 3 / 每区域父代数决定 BX、BR 数量，同轮混合筛选 |
@@ -55,11 +55,13 @@ python main.py problem=op_aco problem.behavior.feature_group=full
 ```
 
 OP/MKP/CVRP 的完整描述器保留，`feature_group=mean` 是内置投影，不是运行时修改类定义。
+CVRP 默认使用 5D 和随机可行路径的前中后均匀分层探针，详见 [CVRP 特征与探针](CVRP_5D.md)。
+OP 的熵/耗时 2D、5D 本地模型实验见 [实验脚本](experiments/op_entropy_cost/README.md)。
 
 进化仅维护优势档案和区域锚点；完整评估历史用于预测器、去重和新颖性计算。
 `pop_size` 已移除。为兼容结果读取脚本，`population_generation_*.json` 文件名保留，
 其内容为当前优势档案；`best_population_generation_*.json` 保存档案最优算法。
-Probe阶段、特征计算、评估函数沿用原实现。
+真实评估函数保持原实现；CVRP 默认特征与探针的变更见上述说明。
 
 初始化结束后直接建立区域；旧 BE/cold-start 配置、执行分支及提示词已移除。
 预测器启动和最少训练样本统一读取 `method.predictor.min_samples`：成功真实评估数与
