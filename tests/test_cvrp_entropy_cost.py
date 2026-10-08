@@ -147,6 +147,19 @@ class CVRPFeatureTests(unittest.TestCase):
         code = 'def heuristics(distance):\n    return np.ones_like(distance)'
         self.assertEqual(two.encode([code, code]).shape, (2, 2))
 
+    def test_two_and_five_share_core_and_call_count(self):
+        two = CVRPEntropyCostEmbedder(self.base, 'entropy_time2')
+        code = 'def heuristics(distance, demand):\n    return (1+demand[None,:])/(distance+1e-9)'
+        vectors = []
+        for encoder in (two, self.five):
+            with patch.object(self.base, '_call_heuristic', wraps=self.base._call_heuristic) as call:
+                vectors.append(encoder.encode_single(code))
+            self.assertEqual(call.call_count, self.base.n_matrices)
+            self.assertGreater(vectors[-1][1], 0)
+        self.assertEqual(two.feature_names, NAMES[:2])
+        self.assertEqual(vectors[0].shape, (2,))
+        self.assertAlmostEqual(vectors[0][0], vectors[1][0], places=6)
+
     def test_current_hydra_config_reaches_factory(self):
         with initialize_config_dir(config_dir=str(ROOT/'cfg'), version_base=None):
             cfg = compose(config_name='config', overrides=['problem=cvrp_aco', 'seed=3333'])

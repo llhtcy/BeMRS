@@ -41,7 +41,7 @@ python main.py problem=cvrp_aco seed=1111
 ```
 
 该特征变更不切换模型传输接口。默认 `main.py` 仍使用正式配置的LLM接口；OP本地Ollama脚本保持原有行为。
-服务器本地Qwen3:8B三种子入口为 `experiments/cvrp_entropy_cost/run.py`，默认1111、2222、3333，
+服务器本地Qwen3:8B对照入口为 `experiments/cvrp_entropy_cost/run.py`，默认先2D后5D，每组1111、2222、3333，
 使用原有按需加载Ollama适配器，不常驻加载模型。详情见该目录README。
 
 原Mean7D与完整15D提取器保留作兼容对照。恢复原人工网格状态需要显式选择legacy模式：
