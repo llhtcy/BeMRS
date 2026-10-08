@@ -15,11 +15,6 @@ behavior:
   batch_size: 32
   probe_timeout: 0.05
   encode_timeout: 5.0
-operators:
-  expand_parent_counts:
-  - 1
-  - 2
-  - 4
 func_name: select_next_node
 description: Solving Traveling Salesman Problem (TSP) with constructive heuristics.
   TSP requires finding the shortest path that visits all given nodes and returns to

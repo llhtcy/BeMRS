@@ -16,10 +16,6 @@ behavior:
   heuristic_timeout: 0.5
   encode_timeout: 5
   feature_group: mean
-operators:
-  expand_parent_counts:
-  - 1
-  - 2
 func_name: heuristics
 description: Solving Multiple Knapsack Problems (MKP) through stochastic solution
   sampling based on "heuristics". MKP involves selecting a subset of items to maximize

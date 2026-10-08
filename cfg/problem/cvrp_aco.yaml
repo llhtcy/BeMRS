@@ -14,10 +14,6 @@ behavior:
   heuristic_timeout: 0.5
   encode_timeout: 5.0
   feature_group: entropy_time_preferences5
-operators:
-  expand_parent_counts:
-  - 1
-  - 2
 func_name: heuristics
 description: Solving Capacitated Vehicle Routing Problem (CVRP) via stochastic solution
   sampling. CVRP requires finding the shortest path that visits all given nodes and

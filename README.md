@@ -41,9 +41,9 @@ python main.py problem=tsp_constructive seed=1111
 | 总成功真实评估预算 | 210（包含固定seed评估） |
 | 正式搜索真实评估 | 行为过滤前有效去重新候选的30%，向上取整；novelty从中预留1个 |
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
-| XGBoost | 单一门槛 `predictor.min_samples=50`，最近最多200样本，新增10样本重训 |
+| XGBoost | 单一门槛 `predictor.min_samples=50`，最近最多200样本；每轮有新真实样本，在首次使用前更新一次 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
-| BX/BR | 原概率父代选择；区域内BX、跨区域BX、BR同轮生成，BX名额均分并共用上限 |
+| BX/BR | 统一双父代；原概率父代选择保留；区域内BX、跨区域BX、BR同轮生成，BX名额均分并共用上限 |
 
 常用覆盖：
 
@@ -67,6 +67,11 @@ OP 的熵/耗时 2D、5D 本地模型实验见 [实验脚本](experiments/op_ent
 预测器启动和最少训练样本统一读取 `method.predictor.min_samples`：成功真实评估数与
 有效训练样本数都达到该门槛，且模型训练成功后，预测器及依赖它的行为过滤才可启用。
 旧 `method.predictor.start_successful_evals` 已移除。
+预测器的过滤与排序共用一轮内的模型；没有新真实样本时不重训。同轮备用BX/BR产生的
+后续样本留到下一轮更新。`predictor.retrain_interval` 已移除，启动门槛和训练窗口不变。
+BX/BR均要求两个不同算法：区域内BX和BR来自同一区域，跨区域BX来自两个不同区域。
+不足两个父代时跳过对应路径，不使用单父代或三父代；未用BX名额仍按既有规则转移。
+`operators.expand_parent_counts` 及父代数量轮换已移除，距离排名概率温度1.5保持不变。
 
 ## 检查与评估已有算法
 

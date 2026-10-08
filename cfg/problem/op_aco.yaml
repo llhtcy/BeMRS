@@ -16,10 +16,6 @@ behavior:
   heuristic_timeout: 0.5
   encode_timeout: 5
   feature_group: mean
-operators:
-  expand_parent_counts:
-  - 1
-  - 2
 func_name: heuristics
 description: Solving Orienteering Problem (OP) via stochastic solution sampling following
   "heuristics". OP is an optimization problem where the goal is to find the most rewarding

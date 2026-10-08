@@ -23,7 +23,7 @@ predictor:
   min_samples: 50
   max_samples: 200
   seed: ${seed}
-  retrain_interval: 10
+  # Refresh before use, once per round with new real-evaluated samples.
   xgboost:
     n_estimators: 250
     max_depth: 3

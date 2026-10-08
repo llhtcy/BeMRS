@@ -15,11 +15,14 @@ archive and each requests up to its actual size, using the same evaluation ratio
 
 For a region with \`n_r\` unique parents, the plan has at most \`n_r\` BX rows
 and \`n_r\` BR rows. The existing probability based parent selection remains in
-use. BX cycles the first parent by quality and samples additional parents from
+use. BX cycles the first parent by quality and samples its second parent from
 the distance ranking with the existing seeded distribution. BR keeps the best
 regional anchor and samples its second parent toward nearby behavior. A
-singleton can produce one single-parent BX; BR keeps its existing two-parent
-requirement and skips a singleton. Every round includes both intra-region and
+singleton cannot produce intra-region BX or BR: every BX/BR request requires
+two distinct algorithms. Cross-region BX always uses the owning region's Top1
+and one parent from a different region, prioritizing regional Top1 and then
+lower-ranked entries or other regions when pairs are exhausted. It never
+cycles through one, two or K parents. Every round plans both intra-region and
 cross-region BX. Each region splits its n_r BX slots equally; an odd extra slot
 alternates between the two modes on successive rounds. With only one active
 region all BX slots are intra-region. Unfilled parent-combination slots transfer
@@ -62,6 +65,17 @@ evaluation limit 210. Old candidates_per_region and eval_batch_size are removed
 from the default regional configuration. The fixed operator cycle is no longer
 called by formal search; legacy helper paths remain for this first revision.
 The existing distance-rank parent-selection parameters remain in use.
+The old `operators.expand_parent_counts` configuration and parent-count cursors
+are removed; the distance-rank temperature remains unchanged.
+
+XGBoost retains its 50-sample warm-up gate and latest-200 training window. At
+the first eligible filtering/ranking call of a generation, it refreshes only
+if new real-evaluated samples have arrived since the last successful fit.
+Filtering and ranking share that model, with at most one fit attempt per
+generation. A generation with no new samples reuses its model. Later samples
+from a second archive-fallback operator are deferred to the next generation.
+Failed fits do not mark samples as trained and may be retried next generation.
+The old `predictor.retrain_interval` knob is removed.
 
 Archive snapshots replace population management. Historical
 population_generation_*.json names now contain the strict advantage archive;

@@ -115,6 +115,15 @@ class RuntimeTests(unittest.TestCase):
         from bemrs.problem_adapter import Problem
         counter=[0]
         init_prompts=[]
+        fit_events=[]
+        original_update=SearchEngine._train_predictor_if_needed
+        def update(engine,predictor,attr_name,label):
+            previous=getattr(engine,attr_name+'_generation',None)
+            ready=original_update(engine,predictor,attr_name,label)
+            attempt=getattr(engine,attr_name+'_generation',None)
+            if attempt != previous:
+                fit_events.append((engine.current_generation,predictor.get_sample_count()))
+            return ready
         def responses(self,prompts,max_workers=None):
             result=[]
             for prompt in prompts:
@@ -139,14 +148,21 @@ class RuntimeTests(unittest.TestCase):
                     cfg=compose(config_name='config',overrides=[f'max_fe={budget}',f'method.region.enabled={str(regions).lower()}','method.visualization.enabled=false','method.generation.evaluation_ratio=0.1','method.region.archive_target_distinct=24'])
                 self.assertNotIn('pop_size', cfg)
                 workspace=isolated_workspace(Path(tmp))
-                with patch('bemrs.core.engine.build_behavior_embedder',return_value=Encoder()),patch.object(InterfaceAPI,'get_responses',responses),patch.object(Problem,'batch_evaluate',evaluate):
+                with patch('bemrs.core.engine.build_behavior_embedder',return_value=Encoder()),patch.object(InterfaceAPI,'get_responses',responses),patch.object(Problem,'batch_evaluate',evaluate),patch.object(SearchEngine,'_train_predictor_if_needed',update):
                     code,path=BeMRS(cfg,workspace).evolve()
                 self.assertTrue(code);self.assertTrue(Path(path).exists())
                 import json
                 rows=[json.loads(l) for l in Path('algorithm_lineage.jsonl').read_text().splitlines()]
                 successful=[r for r in rows if r['evaluation']['success'] and not r['evaluation'].get('shared')]
                 self.assertEqual(len(successful),budget)
+                self.assertEqual(len(fit_events),len({g for g,_ in fit_events}))
+                if budget > 50:
+                    self.assertTrue(fit_events)
+                    self.assertTrue(all(samples >= 50 for _,samples in fit_events))
                 self.assertFalse(any(r['operator']=='be' for r in rows))
+                for row in rows:
+                    if row['operator'] in ('bx', 'br'):
+                        self.assertEqual(len(row['parents']), 2)
                 self.assertEqual(sum(r['generation']==0 for r in successful),min(24,budget))
                 self.assertEqual(len(init_prompts),min(24,budget)-1)
                 snapshots = list(Path('.').glob('population_generation_*.json'))

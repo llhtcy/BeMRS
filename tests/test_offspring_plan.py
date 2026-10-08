@@ -20,7 +20,6 @@ class OffspringPlanTests(unittest.TestCase):
             pools[rid] = entries
         engine._region_parent_pools = Mock(return_value=pools)
         engine._active_region_operator_schedule = {}
-        engine.behavior_expand_parent_counts = (1, 2)
         engine.bx_parent_selection_tau = 1.5
         engine._region_rng = np.random.default_rng(seed)
         return engine
@@ -36,13 +35,16 @@ class OffspringPlanTests(unittest.TestCase):
                 sigs = [(r['operator'], engine._parent_batch_signature(r['parents'])) for r in rows]
                 self.assertEqual(len(sigs), len(set(sigs)))
                 for row in rows:
+                    self.assertEqual(len(row['parents']), 2)
                     if row['operator']=='br':
                         self.assertEqual(len(row['parents']),2)
                         pool=engine._region_parent_pools.return_value[row['region_id']]
                         self.assertEqual(row['parents'][0],pool[0]['parent'])
-                if sum(n > 0 for n in sizes) == 1:
+                if sum(n > 0 for n in sizes) == 1 and max(sizes) >= 2:
                     self.assertEqual({r['kind'] for r in rows if r['operator']=='bx'},
                                      {'intra_bx'})
+                if sum(sizes) < 2:
+                    self.assertEqual(rows, [])
             self.assertEqual(engine._region_parent_pools.call_count,2)
 
     def test_balanced_local_counts(self):
@@ -81,6 +83,68 @@ class OffspringPlanTests(unittest.TestCase):
                     for r in self.engine([8,8,8],seed)._build_mixed_parent_plan([])]
         self.assertEqual(signature(1111), signature(1111))
         self.assertNotEqual(signature(1111), signature(2222))
+
+    def test_cross_region_bx_always_has_two_distinct_regions(self):
+        for k in (2, 3, 5):
+            engine = self.engine([4] * k)
+            pools = engine._region_parent_pools.return_value
+            region_by_code = {entry['parent']['code']: rid
+                              for rid, entries in pools.items() for entry in entries}
+            engine._active_parent_batch_signatures = set()
+            rows = engine._build_inter_region_bx_parent_batches(
+                [], k * 4, pools=pools, quotas={rid: 4 for rid in pools})
+            self.assertTrue(rows)
+            for row in rows:
+                first, second = row['parents']
+                self.assertEqual(first, pools[row['region_id']][0]['parent'])
+                self.assertNotEqual(region_by_code[first['code']],
+                                    region_by_code[second['code']])
+                self.assertEqual(row['requested_parent_count'], 2)
+                self.assertEqual(row['actual_parent_count'], 2)
+
+    def test_cross_region_bx_tries_next_region_after_pair_exhaustion(self):
+        engine = self.engine([1, 1, 1])
+        pools = engine._region_parent_pools.return_value
+        engine._active_parent_batch_signatures = set()
+        rows = engine._build_inter_region_bx_parent_batches(
+            [], 2, pools=pools, quotas={0: 2})
+        self.assertEqual([r['parents'][1]['code'] for r in rows],
+                         ['code_1', 'code_2'])
+
+    def test_no_single_parent_generation_and_singleton_bx_transfer(self):
+        engine = self.engine([1])
+        engine._active_parent_batch_signatures = set()
+        self.assertEqual(engine._build_inter_region_bx_parent_batches([], 3), [])
+        self.assertEqual(engine._build_mixed_parent_plan([]), [])
+        rows = self.engine([1, 4])._build_mixed_parent_plan([])
+        owned = [r for r in rows if r['region_id'] == 0]
+        self.assertEqual(len(owned), 1)
+        self.assertEqual(owned[0]['kind'], 'inter_bx')
+        self.assertEqual(len(owned[0]['parents']), 2)
+
+    def test_archive_fallback_is_also_strictly_two_parent(self):
+        for size in (1, 2, 6):
+            engine = self.engine([size])
+            pop = [entry['parent'] for entry in engine._region_parent_pools.return_value[0]]
+            for operator in ('bx', 'br'):
+                engine._active_parent_batch_signatures = set()
+                rows = engine._build_archive_parent_batches(pop, operator, size)
+                if size == 1:
+                    self.assertEqual(rows, [])
+                else:
+                    self.assertTrue(rows)
+                for parents in rows:
+                    self.assertEqual(len(parents), 2)
+                    self.assertNotEqual(parents[0]['code'], parents[1]['code'])
+
+    def test_pair_signature_rejects_wrong_sizes_and_reversed_duplicate(self):
+        engine = self.engine([3])
+        engine._active_parent_batch_signatures = set()
+        parents = [e['parent'] for e in engine._region_parent_pools.return_value[0]]
+        self.assertFalse(engine._register_parent_batch(parents[:1]))
+        self.assertFalse(engine._register_parent_batch(parents))
+        self.assertTrue(engine._register_parent_batch(parents[:2]))
+        self.assertFalse(engine._register_parent_batch(parents[1::-1]))
 
     def test_evaluation_ratio(self):
         for n,b in [(0,0),(1,1),(21,5),(32,7),(48,10)]:

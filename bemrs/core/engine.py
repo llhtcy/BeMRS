@@ -26,6 +26,7 @@ BEHAVIOR_REFINE_OPERATORS = frozenset({'br'})
 STANDARD_BEHAVIOR_OPERATORS = BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS
 _FIXED_OPERATOR_CYCLE = ('bx', 'bx', 'bx', 'br')
 _KMEANS_N_INIT = 10
+_BEHAVIOR_PARENT_COUNT = 2
 
 class SearchEngine:
 
@@ -41,12 +42,6 @@ class SearchEngine:
         problem_config = getattr(interface_prob, 'config', None)
         task_problem_config = getattr(problem_config, 'problem', None)
         task_behavior_config = config_get(task_problem_config, 'behavior')
-        default_parent_counts = (1, 1, 2, 1, 2, 4) if self.problem_name == 'mkp_aco' else (1, 2, 4)
-        default_parent_counts_text = ','.join((str(value) for value in default_parent_counts))
-        self.behavior_expand_parent_counts = self._parse_positive_int_list(os.environ.get('BEMRS_BX_PARENT_COUNTS', os.environ.get('BEMRS_BX_PARENT_COUNTS', getattr(task_problem_config, 'behavior_expand_parent_counts', default_parent_counts_text))), default=default_parent_counts)
-        self._behavior_expand_parent_cursors = {name: 0 for name in BEHAVIOR_EXPAND_OPERATORS}
-        self.bx_parent_counts = self.behavior_expand_parent_counts
-        self._bx_parent_cursors = self._behavior_expand_parent_cursors
         self.debug = False
         cfg_max_fe = getattr(problem_config, 'max_fe', None)
         self.real_eval_budget = max(1, int(os.environ.get('BEMRS_REAL_EVAL_BUDGET', cfg_max_fe if cfg_max_fe is not None else 510)))
@@ -84,8 +79,8 @@ class SearchEngine:
         self._behavior_filter_active_logged = False
         self._behavior_filter_predictor_ready_for_batch = None
         self.behavior_novelty_slot_enabled = os.environ.get('BEMRS_BEHAVIOR_NOVELTY_SLOT_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
-        self.predictor_retrain_interval = max(1, int(os.environ.get('BEMRS_PREDICTOR_RETRAIN_INTERVAL', 10)))
         self._behavior_trained_samples = 0
+        self._behavior_trained_samples_generation = None
         self._evaluated_algorithm_history = []
         self._evaluated_algorithm_codes = set()
         self.region_enabled = os.environ.get('BEMRS_REGION_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
@@ -127,7 +122,6 @@ class SearchEngine:
         self._active_parent_batch_signatures = set()
         self._bx_region_round_count = 0
         self._bx_use_inter_region_this_round = False
-        self._bx_inter_region_parent_count_cursor = 0
         self.llm_batch_generation_enabled = os.environ.get('BEMRS_LLM_BATCH_GENERATION', '1').lower() not in {'0', 'false', 'no'}
         self.llm_max_workers = max(1, int(os.environ.get('BEMRS_LLM_MAX_WORKERS', 6)))
         self.run_output_path = None
@@ -143,15 +137,15 @@ class SearchEngine:
         self.selection_log_top = max(0, int(os.environ.get('BEMRS_SELECTION_LOG_TOP', 10)))
         if not self.debug:
             warnings.filterwarnings('ignore')
-        logging.info('[Predictor] global_xgboost_direct enabled=%s input_dim=%s min_samples=%s window=%s retrain=%s', self.surrogate_selection_enabled, self.behavior_predictor.emb_dim, self.behavior_predictor.min_samples, self.behavior_predictor.max_samples, self.predictor_retrain_interval)
+        logging.info('[Predictor] global_xgboost_direct enabled=%s input_dim=%s min_samples=%s window=%s update=once_per_generation_with_new_samples', self.surrogate_selection_enabled, self.behavior_predictor.emb_dim, self.behavior_predictor.min_samples, self.behavior_predictor.max_samples)
         logging.info('[RealEvalBudget] exact successful-evaluation target=%s', self.real_eval_budget)
         logging.info('[InitConfig] fixed_slots=%s seed_counts_as_slot=True sequential=True context_recent_evaluated=10 refill=False next=regions', self.init_unique_candidate_target)
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
         logging.info('[GenerationConfig] llm_batch=%s llm_workers=%s', self.llm_batch_generation_enabled, self.llm_max_workers)
-        logging.info('[BehaviorOperatorConfig] regional_parents=single_and_pair BX=farthest BR=nearest fallback_bx_parent_counts=%s fallback_tau=%s', self.behavior_expand_parent_counts, self.bx_parent_selection_tau)
+        logging.info('[BehaviorOperatorConfig] parents=2 intra_BX=farthest_rank_probability inter_BX=distinct_regions_top_priority BR=nearest_rank_probability insufficient_parents=skip tau=%s', self.bx_parent_selection_tau)
         logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s start=initialization_complete rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
-        logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=single_bx,single_br,intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
+        logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
 
     def set_timing_output(self, output_path):
         self.run_output_path = output_path
@@ -572,35 +566,38 @@ class SearchEngine:
         except Exception:
             return None
 
-    @staticmethod
-    def _parse_positive_int_list(text, default=(1,)):
-        try:
-            if isinstance(text, str):
-                raw_values = [value.strip() for value in text.replace(';', ',').split(',') if value.strip()]
-            else:
-                raw_values = list(text)
-            values = [int(value) for value in raw_values]
-        except Exception:
-            values = []
-        values = [value for value in values if value > 0]
-        if not values:
-            values = [int(value) for value in default if int(value) > 0]
-        return values or [1]
-
     def _train_predictor_if_needed(self, predictor, attr_name, label):
+        """Refresh once per generation, before use, only with new real samples.
+
+        Filtering and ranking share the model trained on the first eligible
+        call of a generation. Samples added by a later fallback operator are
+        incorporated in the next generation. Failed fits are retried only in
+        a later generation, without marking those samples as trained.
+        """
         sample_count = predictor.get_sample_count()
         trained_count = int(getattr(self, attr_name, 0))
-        already_ready = predictor.is_ready()
-        should_train = not already_ready or trained_count <= 0 or sample_count - trained_count >= self.predictor_retrain_interval
-        if should_train:
-            train_start = time.perf_counter()
-            predictor.train()
-            train_time = time.perf_counter() - train_start
-            if predictor.is_ready():
-                setattr(self, attr_name, sample_count)
-            logging.info('[PredictorTrain] %s trained | samples=%s last_trained=%s interval=%s time=%.3fs ready=%s', label, sample_count, trained_count, self.predictor_retrain_interval, train_time, predictor.is_ready())
+        generation = int(getattr(self, 'current_generation', 0))
+        generation_attr = attr_name + '_generation'
+        last_attempt_generation = getattr(self, generation_attr, None)
+        new_samples = sample_count > trained_count
+        if sample_count < predictor.min_samples:
+            reason = 'below_min_samples'
+        elif not new_samples:
+            reason = 'no_new_samples'
+        elif last_attempt_generation == generation:
+            reason = 'already_attempted_this_generation'
         else:
-            logging.info('[PredictorTrain] %s reuse cached model | samples=%s last_trained=%s interval=%s', label, sample_count, trained_count, self.predictor_retrain_interval)
+            # Record attempts as well as successes: no repeated fits by the
+            # filter/ranking callers, even if the fit fails.
+            setattr(self, generation_attr, generation)
+            train_start = time.perf_counter()
+            fit_succeeded = bool(predictor.train())
+            train_time = time.perf_counter() - train_start
+            if fit_succeeded and predictor.is_ready():
+                setattr(self, attr_name, sample_count)
+            logging.info('[PredictorTrain] %s fit | generation=%s samples=%s previous_trained=%s added=%s update=once_per_generation_with_new_samples time=%.3fs fit_success=%s ready=%s', label, generation, sample_count, trained_count, sample_count - trained_count, train_time, fit_succeeded, predictor.is_ready())
+            return predictor.is_ready()
+        logging.info('[PredictorTrain] %s reuse | generation=%s samples=%s trained_samples=%s reason=%s ready=%s', label, generation, sample_count, trained_count, reason, predictor.is_ready())
         return predictor.is_ready()
 
     def _ensure_surrogate(self):
@@ -1873,48 +1870,6 @@ class SearchEngine:
             raise RuntimeError(f'No unused behavior-guided parent set remains for operator={operator}')
         raise ValueError(f'Unsupported evolution operator: {operator}')
 
-    def _claim_behavior_parent_counts(self, operator, batch_size, available_count=None):
-        """Return operator-specific parent counts for expansion or refinement."""
-        batch_size = max(0, int(batch_size))
-        if operator in BEHAVIOR_REFINE_OPERATORS:
-            count = 2
-            if available_count is not None:
-                count = min(count, max(1, int(available_count)))
-            return [count for _ in range(batch_size)]
-        if operator not in BEHAVIOR_EXPAND_OPERATORS:
-            return [1 for _ in range(batch_size)]
-        configured_source = getattr(self, 'behavior_expand_parent_counts', None)
-        if configured_source is None:
-            configured_source = getattr(self, 'bx_parent_counts', (1, 2, 4))
-        configured = tuple((max(1, int(value)) for value in configured_source)) or (1, 2, 4)
-        cursors = getattr(self, '_behavior_expand_parent_cursors', None)
-        if not isinstance(cursors, dict):
-            legacy_cursors = getattr(self, '_bx_parent_cursors', None)
-            cursors = dict(legacy_cursors) if isinstance(legacy_cursors, dict) else {name: 0 for name in BEHAVIOR_EXPAND_OPERATORS}
-            self._behavior_expand_parent_cursors = cursors
-            self._bx_parent_cursors = cursors
-        start = int(cursors.get(operator, 0))
-        counts = [configured[(start + offset) % len(configured)] for offset in range(batch_size)]
-        cursors[operator] = start + batch_size
-        if available_count is not None:
-            limit = max(1, int(available_count))
-            counts = [min(count, limit) for count in counts]
-        return counts
-
-    def _parent_count_attempt_order(self, operator, requested_count, available_count):
-        """Try the scheduled size first, then other configured sizes if exhausted."""
-        limit = max(1, int(available_count))
-        requested_count = min(max(1, int(requested_count)), limit)
-        if operator not in BEHAVIOR_EXPAND_OPERATORS:
-            return (requested_count,)
-        configured = tuple((max(1, int(value)) for value in getattr(self, 'behavior_expand_parent_counts', (1, 2, 4)))) or (1, 2, 4)
-        order = [requested_count]
-        for count in configured:
-            count = min(count, limit)
-            if count not in order:
-                order.append(count)
-        return tuple(order)
-
     def _parent_batch_signature(self, parents):
         code_keys = [self._canonical_code(parent.get('code')) for parent in list(parents or []) if isinstance(parent, dict)]
         if not code_keys or any((not code_key for code_key in code_keys)):
@@ -1924,6 +1879,8 @@ class SearchEngine:
         return tuple(sorted(code_keys))
 
     def _register_parent_batch(self, parents):
+        if len(parents or []) != _BEHAVIOR_PARENT_COUNT:
+            return False
         signature = self._parent_batch_signature(parents)
         if signature is None or signature in self._active_parent_batch_signatures:
             return False
@@ -2110,12 +2067,12 @@ class SearchEngine:
         return pools
 
     def _build_inter_region_bx_parent_batches(self, pop, batch_size, pools=None, quotas=None):
-        """Build BX parents from top individuals of distinct behavior regions.
+        """Build two-parent BX pairs from two distinct behavior regions.
 
         The scheduled region owns each generation slot and supplies parent 1.
-        Additional parents come from other regions, ordered by their top
-        observed objective.  Parent counts cycle through 1..K while the
-        existing BX prompt and operator label remain unchanged.
+        Parent 2 is taken from another region, prioritizing its top observed
+        objective, then lower-ranked entries when a pair is already used.
+        Exhausted partner regions are skipped before trying the next region.
         """
         pools = self._region_parent_pools(pop) if pools is None else pools
         if not pools:
@@ -2126,7 +2083,7 @@ class SearchEngine:
                 continue
             ranked_entries[int(region_id)] = sorted(entries, key=lambda entry: (self._safe_objective(entry['parent'].get('objective')), self._canonical_code(entry['parent'].get('code'))))
         all_region_ids = sorted(ranked_entries)
-        if not all_region_ids:
+        if len(all_region_ids) < _BEHAVIOR_PARENT_COUNT:
             return []
         scheduled_region_ids = self._scheduled_region_ids('bx') if quotas is None else set(quotas)
         anchor_region_ids = [region_id for region_id in all_region_ids if scheduled_region_ids is None or region_id in scheduled_region_ids]
@@ -2140,55 +2097,29 @@ class SearchEngine:
         attempts = 0
         max_attempts = max(batch_size * 32, 64)
         region_cursor = 0
-        parent_count_cursor = int(getattr(self, '_bx_inter_region_parent_count_cursor', 0))
-        region_count = len(all_region_ids)
         while len(rows) < batch_size and attempts < max_attempts:
             active_anchor_ids = [region_id for region_id in anchor_region_ids if accepted_by_region[region_id] < target_quotas.get(region_id, 0)]
             if not active_anchor_ids:
                 break
-            parent_cycle = parent_count_cursor // region_count
-            anchor_region_id = active_anchor_ids[(region_cursor + parent_cycle) % len(active_anchor_ids)]
+            anchor_region_id = active_anchor_ids[region_cursor % len(active_anchor_ids)]
             region_cursor += 1
-            requested_parent_count = 1 + parent_count_cursor % region_count
-            parent_count_cursor += 1
             other_region_ids = sorted((region_id for region_id in all_region_ids if region_id != anchor_region_id), key=lambda region_id: (self._safe_objective(ranked_entries[region_id][0]['parent'].get('objective')), region_id))
-            selected_region_ids = [anchor_region_id] + other_region_ids[:requested_parent_count - 1]
             selected_entries = None
-            replaceable_slots = list(range(1, len(selected_region_ids)))
-            max_depth = max((len(ranked_entries[selected_region_ids[slot]]) for slot in replaceable_slots), default=1)
-            max_variants = 1 + len(replaceable_slots) * max_depth
-            for variant in range(max_variants):
-                candidate_entries = []
-                valid_variant = True
-                changed_slot = None
-                changed_depth = 0
-                if variant > 0 and replaceable_slots:
-                    changed_slot = replaceable_slots[(variant - 1) % len(replaceable_slots)]
-                    changed_depth = 1 + (variant - 1) // len(replaceable_slots)
-                for slot, region_id in enumerate(selected_region_ids):
-                    entry_index = changed_depth if slot == changed_slot else 0
-                    entries = ranked_entries[region_id]
-                    if entry_index >= len(entries):
-                        valid_variant = False
+            anchor_entry = ranked_entries[anchor_region_id][0]
+            for partner_region_id in other_region_ids:
+                for partner_entry in ranked_entries[partner_region_id]:
+                    candidate_entries = [anchor_entry, partner_entry]
+                    parents = [entry['parent'] for entry in candidate_entries]
+                    if self._register_parent_batch(parents):
+                        selected_entries = candidate_entries
                         break
-                    candidate_entries.append(entries[entry_index])
-                if not valid_variant:
-                    continue
-                parents = [entry['parent'] for entry in candidate_entries]
-                code_keys = [self._canonical_code(parent.get('code')) for parent in parents]
-                if any((not code_key for code_key in code_keys)) or len(set(code_keys)) != len(code_keys):
-                    continue
-                if not self._register_parent_batch(parents):
-                    continue
-                selected_entries = candidate_entries
-                break
-            if selected_entries is None:
-                attempts += 1
-                continue
+                if selected_entries is not None:
+                    break
             attempts += 1
+            if selected_entries is None:
+                continue
             accepted_by_region[anchor_region_id] += 1
-            rows.append({'region_id': int(anchor_region_id), 'parents': [entry['parent'] for entry in selected_entries], 'requested_parent_count': int(requested_parent_count), 'actual_parent_count': int(len(selected_entries)), 'operator_schedule': self._region_operator_metadata(anchor_region_id, operator='bx')})
-        self._bx_inter_region_parent_count_cursor = parent_count_cursor
+            rows.append({'region_id': int(anchor_region_id), 'parents': [entry['parent'] for entry in selected_entries], 'requested_parent_count': _BEHAVIOR_PARENT_COUNT, 'actual_parent_count': _BEHAVIOR_PARENT_COUNT, 'operator_schedule': self._region_operator_metadata(anchor_region_id, operator='bx')})
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available for operator=bx', len(rows), batch_size)
         logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=top_parent_priority parent_source=advantage_archive', len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})})
@@ -2212,9 +2143,7 @@ class SearchEngine:
         batch_size = max(0, int(batch_size))
         target_quotas = self._operator_region_generation_quotas(operator, region_ids, batch_size) if quotas is None else quotas
         rows = []
-        requested_parent_counts = self._claim_behavior_parent_counts(operator, batch_size=batch_size)
         attempts = 0
-        failed_attempts_for_slot = 0
         max_attempts = max(batch_size * 32, 64)
         accepted_by_region = {region_id: 0 for region_id in region_ids}
         attempts_by_region = {region_id: 0 for region_id in region_ids}
@@ -2237,7 +2166,7 @@ class SearchEngine:
             if not entries:
                 attempts += 1
                 continue
-            if operator in BEHAVIOR_REFINE_OPERATORS and len(entries) < 2:
+            if len(entries) < _BEHAVIOR_PARENT_COUNT:
                 attempts += 1
                 continue
             quality_order, distances = region_geometry[region_id]
@@ -2248,11 +2177,12 @@ class SearchEngine:
             else:
                 anchor_index = quality_order[region_round % len(quality_order)]
             objective_values = [self._safe_objective(entry['parent'].get('objective')) for entry in entries]
-            requested_parent_count = requested_parent_counts[len(rows)]
             distinct_objectives = {float(value) for value in objective_values if np.isfinite(value)}
             max_parent_count = min(len(entries), len(distinct_objectives) if distinct_objectives else len(entries))
-            parent_count_order = self._parent_count_attempt_order(operator, requested_parent_count, max_parent_count)
-            parent_count = parent_count_order[failed_attempts_for_slot % len(parent_count_order)]
+            if max_parent_count < _BEHAVIOR_PARENT_COUNT:
+                attempts += 1
+                continue
+            parent_count = _BEHAVIOR_PARENT_COUNT
             if operator in BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS:
                 selected_indices = self._rank_softmax_maxmin_parent_indices(distances, parent_count=parent_count, anchor=anchor_index, tau=self.bx_parent_selection_tau, rng=self._region_rng, objective_values=objective_values, prefer_near=operator in BEHAVIOR_REFINE_OPERATORS)
             elif operator in BEHAVIOR_REFINE_OPERATORS and parent_count > 1:
@@ -2261,15 +2191,12 @@ class SearchEngine:
                 selected_indices = self._diverse_parent_indices(distances, parent_count=parent_count, anchor=anchor_index, variant=region_round // max(1, len(quality_order)), objective_values=objective_values)
             attempts += 1
             if len(selected_indices) < parent_count:
-                failed_attempts_for_slot += 1
                 continue
             parents = [entries[index]['parent'] for index in selected_indices]
             if not self._register_parent_batch(parents):
-                failed_attempts_for_slot += 1
                 continue
             accepted_by_region[region_id] += 1
-            rows.append({'region_id': int(region_id), 'parents': parents, 'requested_parent_count': int(requested_parent_count), 'actual_parent_count': int(len(parents)), 'operator_schedule': self._region_operator_metadata(region_id, operator=operator)})
-            failed_attempts_for_slot = 0
+            rows.append({'region_id': int(region_id), 'parents': parents, 'requested_parent_count': _BEHAVIOR_PARENT_COUNT, 'actual_parent_count': int(len(parents)), 'operator_schedule': self._region_operator_metadata(region_id, operator=operator)})
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available', len(rows), batch_size)
         logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s parent_source=advantage_archive', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
@@ -2439,10 +2366,12 @@ class SearchEngine:
             parent_pool.append(parent)
         if not parent_pool:
             raise ValueError('Candidate generation requires a non-empty advantage archive')
+        if len(parent_pool) < _BEHAVIOR_PARENT_COUNT:
+            logging.info('[ArchiveParents] operator=%s skipped | reason=fewer_than_two_distinct_parents', operator)
+            return []
         finite_parents = [parent for parent in parent_pool if np.isfinite(self._safe_objective(parent.get('objective')))]
         elite_parent = min(finite_parents or parent_pool, key=lambda parent: self._safe_objective(parent.get('objective')))
         elite_code = self._canonical_code(elite_parent.get('code'))
-        requested_parent_counts = self._claim_behavior_parent_counts(operator, batch_size=batch_size, available_count=len(parent_pool))
         behavior_rows = []
         valid_geometry = True
         feature_dim = None
@@ -2467,24 +2396,21 @@ class SearchEngine:
         objective_values = [self._safe_objective(parent.get('objective')) for parent in parent_pool]
         batches = []
         attempts = 0
-        failed_attempts_for_slot = 0
         max_attempts = max(int(batch_size) * 32, 64)
         while len(batches) < max(0, int(batch_size)) and attempts < max_attempts:
             anchor = elite_index if operator in BEHAVIOR_REFINE_OPERATORS or attempts == 0 else attempts % len(parent_pool)
-            requested_parent_count = requested_parent_counts[len(batches)]
-            parent_count_order = self._parent_count_attempt_order(operator, requested_parent_count, len(parent_pool))
-            parent_count = parent_count_order[failed_attempts_for_slot % len(parent_count_order)]
+            parent_count = _BEHAVIOR_PARENT_COUNT
             if operator in BEHAVIOR_REFINE_OPERATORS and parent_count > 1:
                 selected_indices = self._refinement_parent_indices(distances, anchor=anchor, objective_values=objective_values, variant=attempts)
             else:
                 selected_indices = self._diverse_parent_indices(distances, parent_count=parent_count, anchor=anchor, variant=attempts // max(1, len(parent_pool)), objective_values=objective_values)
             parents = [parent_pool[index] for index in selected_indices]
             attempts += 1
+            if len(parents) != _BEHAVIOR_PARENT_COUNT:
+                continue
             if not self._register_parent_batch(parents):
-                failed_attempts_for_slot += 1
                 continue
             batches.append(parents)
-            failed_attempts_for_slot = 0
         if len(batches) < int(batch_size):
             logging.warning('[ArchiveParents] only %s/%s non-repeating parent sets available', len(batches), batch_size)
         logging.info('[ArchiveParents] operator=%s candidates=%s unique_parent_sets=%s parent_count_histogram=%s elite_in_first_batch=%s elite_objective=%.6g behavior_diverse=%s selection=%s', operator, len(batches), len(batches), {count: sum((len(parents) == count for parents in batches)) for count in sorted({len(parents) for parents in batches})}, bool(batches and elite_code in self._parent_batch_signature(batches[0])), self._safe_objective(elite_parent.get('objective')), valid_geometry, 'best_anchor_plus_nearby_contrast' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_max_min')
@@ -2567,7 +2493,6 @@ class SearchEngine:
         quotas = {rid: len(entries) for rid, entries in pools.items() if entries}
         bx_round = int(getattr(self, '_bx_region_round_count', 0))
         self._bx_region_round_count = bx_round + 1
-        self._bx_inter_region_parent_count_cursor = 0
         rows = []
         has_other_region = len(quotas) > 1
         intra_quotas = {rid: (n // 2 + int(n % 2 and bx_round % 2 == 0))
@@ -2678,7 +2603,7 @@ class SearchEngine:
             region_scheduled_ids = {int(s['region_id']) for s in self._region_states}
             logging.info('[MixedParentPlan] total=%s counts=%s dedupe=per_operator_unordered', n_generate,
                          {kind: sum(r['kind'] == kind for r in mixed_plan) for kind in
-                          ('single_bx', 'single_br', 'intra_bx', 'intra_br', 'inter_bx')})
+                          ('intra_bx', 'intra_br', 'inter_bx')})
         elif region_active:
             scheduled_region_ids = self._scheduled_region_ids(operator)
             eligible_states = [state for state in self._region_states if scheduled_region_ids is None or int(state['region_id']) in scheduled_region_ids]
@@ -2694,8 +2619,6 @@ class SearchEngine:
                 bx_round = int(getattr(self, '_bx_region_round_count', 0))
                 self._bx_use_inter_region_this_round = bool(bx_round % 2)
                 self._bx_region_round_count = bx_round + 1
-                if self._bx_use_inter_region_this_round:
-                    self._bx_inter_region_parent_count_cursor = 0
             logging.info('[RegionGenerationBudget] operator=%s total=%s regional=%s quotas=%s', operator, n_generate, regional_generate_count, generation_quotas)
         remaining_generation_slots = self.get_remaining_generated_algorithm_slots()
         if remaining_generation_slots <= 0:

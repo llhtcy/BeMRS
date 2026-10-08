@@ -16,7 +16,3 @@ behavior:
   heuristic_timeout: 0.25
   encode_timeout: 5.0
   batch_size: 16
-operators:
-  expand_parent_counts:
-  - 1
-  - 2
