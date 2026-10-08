@@ -43,8 +43,7 @@ region:
   relative_improvement: 0.0001
   rebuild_tolerance: 5
   preserve_global_best_anchor: true
-  bx_parent_selection:
-    tau_bx: 1.5
+  # Intra-BX / BR use parameter-free reciprocal distance-rank probabilities.
   scale_window: 100
   # Formal-search evaluation slots use generation.evaluation_ratio.
   seed: ${seed}

@@ -8,7 +8,7 @@ import numpy as np
 from .deterministic_behavior_rng import fixed_candidate_random_state
 from .op_aco_behavior import OPBehaviorTimeout, _hard_timeout
 
-NAMES = ('decision_entropy', 'feature_extraction_time_s', 'prize_rank_mean',
+NAMES = ('decision_entropy', 'feature_extraction_time_ratio', 'prize_rank_mean',
          'distance_rank_mean', 'efficiency_rank_mean')
 
 
@@ -17,20 +17,28 @@ class OPEntropyCostEmbedder:
 
     Time excludes bank setup, lazy imports and logging. Both groups calculate
     existing core descriptors, without slopes, matrix diagnostics or noise.
+    The time coordinate is elapsed seconds divided by the existing positive
+    encoding deadline. Raw seconds remain available in diagnostics.
     """
     def __init__(self, encoder, group):
         if group not in ('entropy_time2', 'entropy_time_preferences5'):
             raise ValueError(group)
         self.encoder = encoder
+        self.time_normalization_budget_s = float(encoder.encode_timeout)
+        if not np.isfinite(self.time_normalization_budget_s) or self.time_normalization_budget_s <= 0:
+            raise ValueError('Normalized OP extraction time requires a positive finite encode_timeout')
         self.output_dim = 2 if group == 'entropy_time2' else 5
         self.feature_names = NAMES[:self.output_dim]
-        self.extractor_version = f'op_{group}_shared_protocol_v1'
-        self.extractor_description = 'Entropy and extraction seconds, optionally three mean decision preferences'
+        self.extractor_version = f'op_{group}_shared_protocol_time_ratio_v2'
+        self.extractor_description = 'Entropy and normalized extraction time, optionally three mean decision preferences'
         self.last_diagnostics = {}
         with fixed_candidate_random_state('op_cost_preload', encoder.seed):
             pass
-        logging.info('[EntropyCostFeatures] group=%s dimension=%s names=%s noise=False timing_protocol=shared_core_no_slopes time_unit=s',
-                     group, self.output_dim, self.feature_names)
+        logging.info('[EntropyCostFeatures] group=%s dimension=%s names=%s noise=False '
+                     'timing_protocol=shared_core_no_slopes time_unit=s time_feature_unit=ratio '
+                     'time_normalization=encode_timeout time_normalization_budget_s=%s extractor=%s',
+                     group, self.output_dim, self.feature_names, self.time_normalization_budget_s,
+                     self.extractor_version)
 
     def __getattr__(self, name):
         return getattr(self.encoder, name)
@@ -38,9 +46,14 @@ class OPEntropyCostEmbedder:
     def _fallback_feature(self):
         return np.full(self.output_dim, -1, dtype=np.float32)
 
+    def _normalized_extraction_time(self, elapsed):
+        return float(np.clip(elapsed / self.time_normalization_budget_s, 0.0, 1.0))
+
     def encode_single(self, code):
         started = time.perf_counter()
-        diagnostics = dict(dimension=self.output_dim, time_unit='s')
+        diagnostics = dict(dimension=self.output_dim, time_unit='s', time_feature_unit='ratio',
+                           time_normalization_budget_s=self.time_normalization_budget_s,
+                           extractor_version=self.extractor_version)
         try:
             with fixed_candidate_random_state(code, self.encoder.seed):
                 with _hard_timeout(self.encoder.encode_timeout):
@@ -66,11 +79,12 @@ class OPEntropyCostEmbedder:
             elapsed = time.perf_counter()-started
             if self.encoder.encode_timeout > 0 and elapsed > self.encoder.encode_timeout:
                 raise OPBehaviorTimeout('Entropy/cost encoding deadline exceeded')
-            complete = np.asarray([means[0],elapsed,*means[1:]],dtype=np.float32)
+            complete = np.asarray([means[0],self._normalized_extraction_time(elapsed),*means[1:]],dtype=np.float32)
             if not np.isfinite(complete).all():
                 raise ValueError('Nonfinite OP entropy/cost features')
             feature = complete[:self.output_dim].copy()
-            diagnostics.update(status='ok',features=dict(zip(self.feature_names,map(float,feature))),
+            diagnostics.update(status='ok',feature_extraction_time_s=elapsed,
+                               features=dict(zip(self.feature_names,map(float,feature))),
                                probes=sum(len(states) for states in self.encoder._state_banks))
         except Exception as error:
             feature = self._fallback_feature()

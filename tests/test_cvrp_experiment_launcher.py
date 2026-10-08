@@ -15,13 +15,13 @@ class CVRPLauncherTests(unittest.TestCase):
                           ('5d', 1111), ('5d', 2222), ('5d', 3333)])
         self.assertEqual(len({str(output) for _, _, output, _ in jobs}), 6)
         for group, seed, output, cmd in jobs:
-            self.assertIn('runs_local_ollama', output.parts)
+            self.assertIn('runs_local_vllm', output.parts)
             self.assertIn(group, output.parts)
             self.assertIn(f'seed_{seed}', output.parts)
             self.assertIn(f'problem.behavior.feature_group={run.GROUPS[group]}', cmd)
-            self.assertIn('model=qwen3:8b', cmd)
-            self.assertIn('base_url=http://127.0.0.1:11434/v1', cmd)
-            self.assertIn('api_key=ollama', cmd)
+            self.assertIn('model=Qwen/Qwen3-8B', cmd)
+            self.assertIn('base_url=http://127.0.0.1:8000/v1', cmd)
+            self.assertIn('api_key=local-vllm', cmd)
             self.assertIn('problem.behavior.matrices=5', cmd)
             self.assertIn('problem.behavior.probes_per_stage=4', cmd)
             self.assertIn('problem.behavior.probe_mode=random_stratified', cmd)
@@ -37,7 +37,7 @@ class CVRPLauncherTests(unittest.TestCase):
     def test_check_jobs_have_separate_outputs(self):
         jobs = run.build_jobs(['2d'], [2222], True, 'test_stamp')
         _, _, output, cmd = jobs[0]
-        self.assertIn('checks_local_ollama', output.parts)
+        self.assertIn('checks_local_vllm', output.parts)
         self.assertIn('check=true', cmd)
 
     def test_dry_run_never_starts_a_child(self):
@@ -48,7 +48,8 @@ class CVRPLauncherTests(unittest.TestCase):
 
     def test_explicit_group_seed_launch_and_duplicate_rejection(self):
         with patch('sys.argv', ['run.py', '--groups', '5d', '--seeds', '3333']), \
-             patch.object(run.subprocess, 'run') as child:
+             patch.object(run.subprocess, 'run') as child, \
+             patch.object(run, 'managed_server', return_value=contextlib.nullcontext()):
             with contextlib.redirect_stdout(io.StringIO()):
                 run.main()
         child.assert_called_once()

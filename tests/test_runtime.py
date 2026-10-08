@@ -98,7 +98,7 @@ class RuntimeTests(unittest.TestCase):
         distance=np.array([[0,1,2,3],[1,0,1,2],[2,1,0,1],[3,2,1,0]],float)
         def sample(near):
             rng=np.random.default_rng(1111)
-            return [SearchEngine._rank_softmax_maxmin_parent_indices(distance,2,0,1.5,rng,prefer_near=near)[1] for _ in range(1000)]
+            return [SearchEngine._reciprocal_rank_parent_indices(distance,2,0,rng,prefer_near=near)[1] for _ in range(1000)]
         self.assertGreater(np.mean(sample(False)),np.mean(sample(True)))
 
     def test_full_search_mock_io(self):

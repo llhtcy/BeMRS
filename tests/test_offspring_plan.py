@@ -20,7 +20,6 @@ class OffspringPlanTests(unittest.TestCase):
             pools[rid] = entries
         engine._region_parent_pools = Mock(return_value=pools)
         engine._active_region_operator_schedule = {}
-        engine.bx_parent_selection_tau = 1.5
         engine._region_rng = np.random.default_rng(seed)
         return engine
 

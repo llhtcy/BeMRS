@@ -6,11 +6,16 @@
 
 | 组 | 输入预测器/聚类/行为过滤的特征 |
 |---|---|
-| 2D | 决策熵、特征提取耗时（s） |
+| 2D | 决策熵、归一化特征提取耗时（0–1） |
 | 5D | 上述2维、奖励偏好均值、距离偏好均值、效率偏好均值 |
 
 两组同一流程计算现有OP core描述器，只输出不同列，保证耗时定义一致。
 时间包括编译、每实例一次候选调用及描述器统计，排除建库、首次导入及日志写入。
+时间坐标为 `clip(elapsed_s / encode_timeout, 0, 1)`，复用已有总提取超时，服务器当前为5 s；
+不新增归一化超参数。提取器版本为 `shared_protocol_time_ratio_v2`，两组使用相同定义。
+原始秒数单独记录在每条诊断的 `feature_extraction_time_s`，输入向量中的时间列改名为
+`feature_extraction_time_ratio`。有效特征均在0–1内；失败仍返回全-1哨兵并沿用原有失败处理。
+`encode_timeout` 必须为正且有限；修改特征定义后需从新实验进程重新训练，不能混入v1的秒值特征。
 不计算扰动稳定性、斜率或矩阵诊断。2D仍计算偏好统计，但不把它们传给任何下游模块。
 该耗时与旧response3的扰动提取耗时不在同一测量口径，不可直接视为同一个特征数值。
 
@@ -31,18 +36,24 @@ cd /root/lhc/BeMRS-standalone
 /root/miniconda3/envs/hsevo/bin/python experiments/op_entropy_cost/run.py --groups 5d --seeds 2222
 ```
 
-本地模型固定为 `qwen3:8b`，通过双卡网关 `http://127.0.0.1:11434/api/chat`
-调用，`think=false`，温度保留正式接口的1.0，并发继承现有配置（6）。
+本地模型改为官方 `Qwen/Qwen3-8B` BF16 Safetensors，通过 vLLM
+`http://127.0.0.1:8000/v1/chat/completions` 调用，不再调用 Ollama。
+禁用思考；温度1.0、top_p=0.95、top_k=20、repetition_penalty=1.0保留旧调用的有效设置，并发仍为6。
+显式限制每次输出8192 tokens，遇到截断时报错；服务上下文40960。
+这属于推理服务限制，不修改子代生成数量、评估比例或探针定义。
+启动命令时在GPU 0/1/2/3加载一次四卡TP模型，全部任务结束/失败/中断后释放。
+`--check`、`--dry-run`不加载模型；已有外部vLLM服务可复用，但本命令不会停止外部服务。
 传输替换只发生在实验子进程，不修改正式模块；不会回退到云端模型。
-返回对象保留现有 InterfaceAPI 接口，日志包含实际后端端口和模型token计数。
-原LLMBatch计数仍是现有tiktoken估计口径。默认上下文继承Ollama，不新增生成策略参数。
+返回对象保留现有 InterfaceAPI 接口，日志含`[LocalVLLM]`、BF16、TP=4和实际模型token计数。
+原LLMBatch计数仍是现有tiktoken估计口径。环境与权重部署见[部署说明](../../deployment/vllm/README.md)。
 
 ```bash
 # 用实际InterfaceAPI发6个短并发请求验证本地调用，无搜索或真实评估
 /root/miniconda3/envs/hsevo/bin/python experiments/op_entropy_cost/run.py --llm-check
 ```
 
-输出：`experiments/op_entropy_cost/runs_local_ollama/{2d,5d}/seed_*/时间戳/`。
+输出：`experiments/op_entropy_cost/runs_local_vllm/{2d,5d}/seed_*/时间戳/`。
+旧`*_local_ollama`结果保持原样，不会混入新实验。
 
 ## 随机状态对照
 
@@ -59,7 +70,7 @@ cd /root/lhc/BeMRS-standalone
 /root/miniconda3/envs/hsevo/bin/python experiments/op_entropy_cost/run.py --random-states --check
 ```
 
-结果独立保存到 `runs_random_states_local_ollama/{2d,5d}/seed_*/时间戳/`。
+结果独立保存到 `runs_random_states_local_vllm/{2d,5d}/seed_*/时间戳/`。
 只在该脚本子进程替换探针建库函数，正式默认描述器和此前实验不变。
 
 ## 均匀分层随机状态（推荐本轮测试）
@@ -72,5 +83,5 @@ cd /root/lhc/BeMRS-standalone
 日志记录路径数量、建库耗时秒、各池规模、去重数量和bank_hash。
 不使用奖励或距离优先规则，也不做固定0.2/0.5/0.8目标状态选择。
 其他参数沿用当前服务器配置；此前模式保留，结果单独写入
-`runs_stratified_random_states_local_ollama/5d/seed_*/时间戳/`。
+`runs_stratified_random_states_local_vllm/5d/seed_*/时间戳/`。
 实际参数由Hydra保存在每轮快照中；其中可能包含API凭据，不要发布或提交快照。

@@ -4,8 +4,11 @@
 特征与探针定义见 [CVRP_5D.md](../../CVRP_5D.md)。
 默认5个实例，每实例前、中、后各4个随机可行状态，共60个探针。
 脚本明确固定实例5、每层探针4、随机均匀分层、模型传输、特征组、随机种子和输出目录，
-其余方法参数继承服务器正式配置；不修改模型服务的GPU分配或常驻策略。
-使用与OP相同的本地Ollama适配器：`http://127.0.0.1:11434/api/chat`、`think=False`、`keep_alive=5m`，没有云端回退。
+其余方法参数继承服务器正式配置。
+使用与OP相同的官方BF16 vLLM适配器：`http://127.0.0.1:8000/v1/chat/completions`，关闭思考，无云端/Ollama回退。
+运行命令时加载GPU 0/1/2/3上的四卡TP模型，六个任务共用一次加载，命令结束后释放，不常驻。
+温度1.0、top_p=0.95、top_k=20、重复惩罚1.0；上下文40960、输出上限8192，截断时报错。
+`--check`与`--dry-run`不会启动或加载模型。部署见[说明](../../deployment/vllm/README.md)。
 
 | 组别 | 输出特征 |
 |---|---|
@@ -35,6 +38,6 @@ cd /root/lhc/BeMRS-standalone
 /root/miniconda3/envs/hsevo/bin/python experiments/cvrp_entropy_cost/run.py --dry-run
 ```
 
-搜索日志存放在 `experiments/cvrp_entropy_cost/runs_local_ollama/<2d或5d>/seed_<seed>/<时间>/main.log`，
-检查日志在 `checks_local_ollama` 下，不覆盖历史CVRP或OP结果。
+搜索日志存放在 `experiments/cvrp_entropy_cost/runs_local_vllm/<2d或5d>/seed_<seed>/<时间>/main.log`，
+检查日志在 `checks_local_vllm` 下，不覆盖历史CVRP或OP结果；旧Ollama实验保留原目录。
 同一个命令中的任务顺序执行；某次失败会停止，不会跳过后伪装成全部成功。每次新调用使用新的时间戳。

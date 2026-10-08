@@ -12,3 +12,4 @@ checks/
 *.key
 experiments/**/runs*/
 experiments/**/checks*/
+deployment/vllm/logs/

@@ -114,16 +114,19 @@ class PredictorUpdateTests(unittest.TestCase):
             self.assertNotIn('operators', cfg.problem)
             self.assertEqual(cfg.method.predictor.min_samples, 50)
             self.assertEqual(cfg.method.predictor.max_samples, 200)
-            self.assertEqual(cfg.method.region.bx_parent_selection.tau_bx, 1.5)
+            self.assertNotIn('bx_parent_selection', cfg.method.region)
             with patch.dict(os.environ, {
                 'BEMRS_PREDICTOR_RETRAIN_INTERVAL': '10',
                 'BEMRS_BX_PARENT_COUNTS': '1,2,3',
+                'BEMRS_BX_PARENT_SELECTION_TAU': '1.5',
             }, clear=True):
                 applied = apply_runtime_config(cfg)
                 self.assertNotIn('BEMRS_PREDICTOR_RETRAIN_INTERVAL', applied)
                 self.assertNotIn('BEMRS_BX_PARENT_COUNTS', applied)
+                self.assertNotIn('BEMRS_BX_PARENT_SELECTION_TAU', applied)
                 self.assertNotIn('BEMRS_PREDICTOR_RETRAIN_INTERVAL', os.environ)
                 self.assertNotIn('BEMRS_BX_PARENT_COUNTS', os.environ)
+                self.assertNotIn('BEMRS_BX_PARENT_SELECTION_TAU', os.environ)
 
 
 if __name__ == '__main__':

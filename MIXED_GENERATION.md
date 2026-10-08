@@ -14,10 +14,11 @@ pop_size parameter. Without regions, BX/BR sample from the current advantage
 archive and each requests up to its actual size, using the same evaluation ratio.
 
 For a region with \`n_r\` unique parents, the plan has at most \`n_r\` BX rows
-and \`n_r\` BR rows. The existing probability based parent selection remains in
-use. BX cycles the first parent by quality and samples its second parent from
-the distance ranking with the existing seeded distribution. BR keeps the best
-regional anchor and samples its second parent toward nearby behavior. A
+and \`n_r\` BR rows. Intra-region BX and BR use the same parameter-free
+reciprocal-rank probability: p_i = (1/r_i) / sum_j(1/r_j). BX cycles the first
+parent by quality and ranks second-parent candidates from farthest to nearest.
+BR keeps the best regional anchor and ranks candidates from nearest to farthest.
+Both sample with the existing seeded RNG; only the probability formula changed. A
 singleton cannot produce intra-region BX or BR: every BX/BR request requires
 two distinct algorithms. Cross-region BX always uses the owning region's Top1
 and one parent from a different region, prioritizing regional Top1 and then
@@ -64,9 +65,9 @@ The default archive target is 24 (matching the current server configuration), re
 evaluation limit 210. Old candidates_per_region and eval_batch_size are removed
 from the default regional configuration. The fixed operator cycle is no longer
 called by formal search; legacy helper paths remain for this first revision.
-The existing distance-rank parent-selection parameters remain in use.
+There are no tunable distance-rank probability parameters.
 The old `operators.expand_parent_counts` configuration and parent-count cursors
-are removed; the distance-rank temperature remains unchanged.
+are removed; the old distance-rank temperature tau_bx is also removed.
 
 XGBoost retains its 50-sample warm-up gate and latest-200 training window. At
 the first eligible filtering/ranking call of a generation, it refreshes only

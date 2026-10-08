@@ -97,8 +97,6 @@ class SearchEngine:
         self.preserve_global_best_anchor = os.environ.get('BEMRS_PRESERVE_GLOBAL_BEST_ANCHOR', '0').lower() not in {'0', 'false', 'no', 'off'}
         self.region_builder = 'behavior_kmeans'
         self.bx_balanced_parent_schedule = False
-        self.bx_parent_selection_strategy = 'rank_softmax_maxmin'
-        self.bx_parent_selection_tau = max(1e-12, float(os.environ.get('BEMRS_BX_PARENT_SELECTION_TAU', 1.5)))
         self.region_scale_window = max(4, int(os.environ.get('BEMRS_REGION_SCALE_WINDOW', 100)))
         from bemrs.offspring_plan import evaluation_slots
         self.evaluation_ratio = float(os.environ.get('BEMRS_EVALUATION_RATIO', '0.1'))
@@ -142,7 +140,7 @@ class SearchEngine:
         logging.info('[InitConfig] fixed_slots=%s seed_counts_as_slot=True sequential=True context_recent_evaluated=10 refill=False next=regions', self.init_unique_candidate_target)
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
         logging.info('[GenerationConfig] llm_batch=%s llm_workers=%s', self.llm_batch_generation_enabled, self.llm_max_workers)
-        logging.info('[BehaviorOperatorConfig] parents=2 intra_BX=farthest_rank_probability inter_BX=distinct_regions_top_priority BR=nearest_rank_probability insufficient_parents=skip tau=%s', self.bx_parent_selection_tau)
+        logging.info('[BehaviorOperatorConfig] parents=2 intra_BX=reciprocal_rank_farthest inter_BX=distinct_regions_top_priority BR=reciprocal_rank_nearest insufficient_parents=skip rank_probability=(1/rank)/sum(1/rank)')
         logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s start=initialization_complete rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
         logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
@@ -1917,14 +1915,15 @@ class SearchEngine:
         return selected
 
     @staticmethod
-    def _rank_softmax_maxmin_parent_indices(distance_matrix, parent_count, anchor, tau, rng, objective_values=None, prefer_near=False):
+    def _reciprocal_rank_parent_indices(distance_matrix, parent_count, anchor, rng, objective_values=None, prefer_near=False):
         """Sample distance ranks: BX prefers far, BR prefers near.
 
         The anchor is fixed as the first parent. Every additional parent is
         sampled without replacement after recomputing its minimum behavior
         distance to the current selected set. Ranking is descending by that
         distance for BX, ascending for BR (prefer_near=True).
-        The rank logits use ``-(rank - 1) / tau``. The caller
+        Rank 1 is preferred, with probability ``(1 / rank) / sum(1 / rank)``.
+        There is no temperature or additional selection parameter. The caller
         supplies the already-seeded experiment RNG so this method does not
         create an independent random stream.
         """
@@ -1936,9 +1935,6 @@ class SearchEngine:
             raise ValueError('distance_matrix must be a square matrix')
         if rng is None or not hasattr(rng, 'choice'):
             raise ValueError('rng with a choice method is required')
-        tau = float(tau)
-        if not np.isfinite(tau) or tau <= 0.0:
-            raise ValueError('tau must be finite and greater than zero')
         selected = [int(anchor) % n_items]
         values = None
         selected_objectives = set()
@@ -1961,14 +1957,8 @@ class SearchEngine:
                     selected_objectives.add(float(values[choice]))
                 continue
             ranked = sorted(remaining, key=lambda index: float(np.min(distance_matrix[index, selected])), reverse=not prefer_near)
-            logits = -np.arange(len(ranked), dtype=np.float64) / tau
-            logits -= float(np.max(logits))
-            weights = np.exp(logits)
-            weight_sum = float(np.sum(weights))
-            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
-                probabilities = np.full(len(ranked), 1.0 / len(ranked), dtype=np.float64)
-            else:
-                probabilities = weights / weight_sum
+            weights = 1.0 / np.arange(1, len(ranked) + 1, dtype=np.float64)
+            probabilities = weights / float(np.sum(weights))
             choice_position = int(rng.choice(len(ranked), p=probabilities))
             choice = int(ranked[choice_position])
             selected.append(choice)
@@ -2184,7 +2174,7 @@ class SearchEngine:
                 continue
             parent_count = _BEHAVIOR_PARENT_COUNT
             if operator in BEHAVIOR_EXPAND_OPERATORS | BEHAVIOR_REFINE_OPERATORS:
-                selected_indices = self._rank_softmax_maxmin_parent_indices(distances, parent_count=parent_count, anchor=anchor_index, tau=self.bx_parent_selection_tau, rng=self._region_rng, objective_values=objective_values, prefer_near=operator in BEHAVIOR_REFINE_OPERATORS)
+                selected_indices = self._reciprocal_rank_parent_indices(distances, parent_count=parent_count, anchor=anchor_index, rng=self._region_rng, objective_values=objective_values, prefer_near=operator in BEHAVIOR_REFINE_OPERATORS)
             elif operator in BEHAVIOR_REFINE_OPERATORS and parent_count > 1:
                 selected_indices = self._refinement_parent_indices(distances, anchor=anchor_index, objective_values=objective_values, variant=region_round)
             else:
@@ -2199,7 +2189,7 @@ class SearchEngine:
             rows.append({'region_id': int(region_id), 'parents': parents, 'requested_parent_count': _BEHAVIOR_PARENT_COUNT, 'actual_parent_count': int(len(parents)), 'operator_schedule': self._region_operator_metadata(region_id, operator=operator)})
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available', len(rows), batch_size)
-        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s parent_source=advantage_archive', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_rank_softmax_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_rank_softmax_max_min' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
+        logging.info('[RegionParents] operator=%s generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=%s parent_source=advantage_archive', operator, len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})}, 'behavior_reciprocal_rank_nearest' if operator in BEHAVIOR_REFINE_OPERATORS else 'behavior_reciprocal_rank_farthest' if operator in BEHAVIOR_EXPAND_OPERATORS else 'behavior_max_min')
         return rows
 
     @staticmethod

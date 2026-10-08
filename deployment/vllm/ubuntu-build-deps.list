@@ -1,0 +1,4 @@
+# Used only for compiler installation; does not change system APT sources.
+deb https://archive.ubuntu.com/ubuntu jammy main
+deb https://archive.ubuntu.com/ubuntu jammy-updates main
+deb https://security.ubuntu.com/ubuntu jammy-security main
