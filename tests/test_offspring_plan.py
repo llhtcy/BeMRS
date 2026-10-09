@@ -119,7 +119,7 @@ class OffspringPlanTests(unittest.TestCase):
     def test_single_parent_cross_bx_is_allowed_but_local_paths_stay_two_parent(self):
         engine = self.engine([1])
         engine._active_parent_batch_signatures = set()
-        rows = engine._build_inter_region_bx_parent_batches([], 3)
+        rows = engine._build_inter_region_bx_parent_batches([], 3, quotas={0: 3})
         self.assertEqual([len(row['parents']) for row in rows], [1])
         self.assertEqual(engine._build_mixed_parent_plan([]), [])
         rows = self.engine([1, 4])._build_mixed_parent_plan([])
