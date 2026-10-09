@@ -50,7 +50,8 @@ def _effective_method_value(cfg, path):
 def apply_runtime_config(cfg):
     """Publish resolved Hydra settings for the unchanged search internals."""
     # Retired knobs must not survive an older launcher/environment. Training
-    # is round-based and every BX/BR request now has exactly two parents.
+    # is round-based; local BX/BR remain two-parent while cross-region BX
+    # uses the built-in 1..K parent-count cycle.
     os.environ.pop('BEMRS_PREDICTOR_RETRAIN_INTERVAL', None)
     os.environ.pop('BEMRS_BX_PARENT_COUNTS', None)
     os.environ.pop('BEMRS_BX_PARENT_SELECTION_TAU', None)

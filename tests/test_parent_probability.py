@@ -1,4 +1,4 @@
-"""Exact BX/BR probability and unchanged cross-BX checks; no external calls."""
+"""Exact local BX/BR probability and cross-region 1..K checks; no external calls."""
 import unittest
 from unittest.mock import Mock, patch
 
@@ -115,7 +115,7 @@ class ParentProbabilityTests(unittest.TestCase):
         self.assertEqual([row['parents'][0] for row in rows],
                          [pools[0][0]['parent'], pools[0][1]['parent']])
 
-    def test_cross_region_bx_keeps_top_priority_without_probability_sampling(self):
+    def test_cross_region_bx_cycles_parent_count_without_probability_sampling(self):
         engine, pools = self.engine([2, 2, 2])
         engine._bx_use_inter_region_this_round = True
         engine._region_rng.choice = Mock(side_effect=AssertionError('Cross-BX must not sample'))
@@ -123,11 +123,13 @@ class ParentProbabilityTests(unittest.TestCase):
                           side_effect=AssertionError('Cross-BX must not use new helper')):
             with self.assertLogs(level='INFO') as captured:
                 rows = engine._build_region_parent_batches(
-                    [], 'bx', 3, pools=pools, quotas={0: 3})
-        self.assertEqual([row['parents'][1]['code'] for row in rows],
-                         ['parent_2', 'parent_3', 'parent_4'])
+                [], 'bx', 3, pools=pools, quotas={0: 3})
+        self.assertEqual([row['requested_parent_count'] for row in rows], [1, 2, 3])
+        self.assertEqual([len(row['parents']) for row in rows], [1, 2, 3])
         self.assertTrue(all(row['parents'][0] == pools[0][0]['parent'] for row in rows))
-        self.assertIn('selection=top_parent_priority', '\n'.join(captured.output))
+        self.assertEqual([row['parents'][1]['code'] for row in rows[1:]], ['parent_2', 'parent_2'])
+        self.assertEqual(rows[2]['parents'][2]['code'], 'parent_4')
+        self.assertIn('selection=legacy_cross_top_priority_cycle_1_to_K', '\n'.join(captured.output))
         engine._region_rng.choice.assert_not_called()
 
 

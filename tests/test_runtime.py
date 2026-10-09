@@ -161,8 +161,11 @@ class RuntimeTests(unittest.TestCase):
                     self.assertTrue(all(samples >= 50 for _,samples in fit_events))
                 self.assertFalse(any(r['operator']=='be' for r in rows))
                 for row in rows:
-                    if row['operator'] in ('bx', 'br'):
+                    if row['operator'] == 'br' or (row['operator'] == 'bx' and row['pipeline'].get('generation_kind') != 'inter_bx'):
                         self.assertEqual(len(row['parents']), 2)
+                    if row['operator'] == 'bx' and row['pipeline'].get('generation_kind') == 'inter_bx':
+                        self.assertGreaterEqual(len(row['parents']), 1)
+                        self.assertLessEqual(len(row['parents']), 3)
                 self.assertEqual(sum(r['generation']==0 for r in successful),min(24,budget))
                 self.assertEqual(len(init_prompts),min(24,budget)-1)
                 snapshots = list(Path('.').glob('population_generation_*.json'))

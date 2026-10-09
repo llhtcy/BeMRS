@@ -34,7 +34,12 @@ class OffspringPlanTests(unittest.TestCase):
                 sigs = [(r['operator'], engine._parent_batch_signature(r['parents'])) for r in rows]
                 self.assertEqual(len(sigs), len(set(sigs)))
                 for row in rows:
-                    self.assertEqual(len(row['parents']), 2)
+                    if row['kind'] == 'inter_bx':
+                        self.assertGreaterEqual(len(row['parents']), 1)
+                        self.assertEqual(len(row['parents']), row['actual_parent_count'])
+                        self.assertEqual(len(row['parents']), row['requested_parent_count'])
+                    else:
+                        self.assertEqual(len(row['parents']), 2)
                     if row['operator']=='br':
                         self.assertEqual(len(row['parents']),2)
                         pool=engine._region_parent_pools.return_value[row['region_id']]
@@ -83,7 +88,7 @@ class OffspringPlanTests(unittest.TestCase):
         self.assertEqual(signature(1111), signature(1111))
         self.assertNotEqual(signature(1111), signature(2222))
 
-    def test_cross_region_bx_always_has_two_distinct_regions(self):
+    def test_cross_region_bx_cycles_one_to_active_K(self):
         for k in (2, 3, 5):
             engine = self.engine([4] * k)
             pools = engine._region_parent_pools.return_value
@@ -93,13 +98,14 @@ class OffspringPlanTests(unittest.TestCase):
             rows = engine._build_inter_region_bx_parent_batches(
                 [], k * 4, pools=pools, quotas={rid: 4 for rid in pools})
             self.assertTrue(rows)
+            self.assertEqual([row['requested_parent_count'] for row in rows[:k]], list(range(1, k + 1)))
             for row in rows:
-                first, second = row['parents']
+                self.assertGreaterEqual(len(row['parents']), 1)
+                self.assertLessEqual(len(row['parents']), k)
+                self.assertEqual(row['requested_parent_count'], len(row['parents']))
+                first = row['parents'][0]
                 self.assertEqual(first, pools[row['region_id']][0]['parent'])
-                self.assertNotEqual(region_by_code[first['code']],
-                                    region_by_code[second['code']])
-                self.assertEqual(row['requested_parent_count'], 2)
-                self.assertEqual(row['actual_parent_count'], 2)
+                self.assertEqual(len({region_by_code[parent['code']] for parent in row['parents']}), len(row['parents']))
 
     def test_cross_region_bx_tries_next_region_after_pair_exhaustion(self):
         engine = self.engine([1, 1, 1])
@@ -107,19 +113,18 @@ class OffspringPlanTests(unittest.TestCase):
         engine._active_parent_batch_signatures = set()
         rows = engine._build_inter_region_bx_parent_batches(
             [], 2, pools=pools, quotas={0: 2})
-        self.assertEqual([r['parents'][1]['code'] for r in rows],
-                         ['code_1', 'code_2'])
+        self.assertEqual([len(r['parents']) for r in rows], [1, 2])
+        self.assertEqual(rows[1]['parents'][1]['code'], 'code_1')
 
-    def test_no_single_parent_generation_and_singleton_bx_transfer(self):
+    def test_single_parent_cross_bx_is_allowed_but_local_paths_stay_two_parent(self):
         engine = self.engine([1])
         engine._active_parent_batch_signatures = set()
-        self.assertEqual(engine._build_inter_region_bx_parent_batches([], 3), [])
+        rows = engine._build_inter_region_bx_parent_batches([], 3)
+        self.assertEqual([len(row['parents']) for row in rows], [1])
         self.assertEqual(engine._build_mixed_parent_plan([]), [])
         rows = self.engine([1, 4])._build_mixed_parent_plan([])
-        owned = [r for r in rows if r['region_id'] == 0]
-        self.assertEqual(len(owned), 1)
-        self.assertEqual(owned[0]['kind'], 'inter_bx')
-        self.assertEqual(len(owned[0]['parents']), 2)
+        self.assertTrue(rows)
+        self.assertTrue(all(len(r['parents']) == 2 for r in rows if r['kind'] != 'inter_bx'))
 
     def test_archive_fallback_is_also_strictly_two_parent(self):
         for size in (1, 2, 6):

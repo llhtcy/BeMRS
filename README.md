@@ -43,7 +43,7 @@ python main.py problem=tsp_constructive seed=1111
 | 行为过滤 | atol=1e-6，rtol=1e-4，XGBoost就绪后启用，rescue开启 |
 | XGBoost | 单一门槛 `predictor.min_samples=50`，最近最多200样本；每轮有新真实样本，在首次使用前更新一次 |
 | 区域预算 | 线性 Winner-Take-Most + 最大余数整数配额 |
-| BX/BR | 统一双父代；区域内BX/BR使用倒数距离排名概率（远/近），跨区域BX保留Top优先；三种路径同轮生成，BX名额均分并共用上限 |
+| BX/BR | 区域内BX/BR使用双父代和倒数距离排名概率（远/近）；跨区域BX按当前非空区域数在1～K父代之间轮换并保留Top优先；三种路径同轮生成，BX名额均分并共用上限 |
 
 常用覆盖：
 
@@ -69,11 +69,12 @@ OP 的熵/耗时 2D、5D 本地模型实验见 [实验脚本](experiments/op_ent
 旧 `method.predictor.start_successful_evals` 已移除。
 预测器的过滤与排序共用一轮内的模型；没有新真实样本时不重训。同轮备用BX/BR产生的
 后续样本留到下一轮更新。`predictor.retrain_interval` 已移除，启动门槛和训练窗口不变。
-BX/BR均要求两个不同算法：区域内BX和BR来自同一区域，跨区域BX来自两个不同区域。
-不足两个父代时跳过对应路径，不使用单父代或三父代；未用BX名额仍按既有规则转移。
-`operators.expand_parent_counts` 及父代数量轮换已移除。区域内BX与BR的第二父代
-共用无温度的倒数排名概率 `p_i=(1/r_i)/sum_j(1/r_j)`：BX按行为距离从远到近，
-BR从近到远排序。第一父代策略、组合去重及跨区域BX的Top优先规则不变。
+区域内BX和BR要求两个不同算法，并来自同一区域。跨区域BX以本区域Top-1为第一父代，
+按当前非空区域数K轮换请求1、2、…、K个父代；请求数量大于1时，从其他区域按Top-1
+真实表现顺序补充，重复组合则使用较低排名父代回退。请求数量为1时保留单锚点BX，
+不是区域内双父代操作。区域内BX与BR的第二父代共用无温度的倒数排名概率
+`p_i=(1/r_i)/sum_j(1/r_j)`：BX按行为距离从远到近，BR从近到远排序。
+跨区域BX的游标跨批次保留；组合去重仍对无序代码集合生效，未用BX名额仍按既有规则转移。
 旧 `region.bx_parent_selection.tau_bx` 参数已移除。
 
 ## 检查与评估已有算法

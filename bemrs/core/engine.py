@@ -120,6 +120,11 @@ class SearchEngine:
         self._active_parent_batch_signatures = set()
         self._bx_region_round_count = 0
         self._bx_use_inter_region_this_round = False
+        # Cross-region BX cycles through 1..K parents, where K is the number
+        # of currently non-empty region parent pools.  The cursor persists
+        # across batches and rounds; rejected duplicate attempts also advance
+        # it so the schedule cannot repeatedly favor one parent count.
+        self._bx_inter_region_parent_count_cursor = 0
         self.llm_batch_generation_enabled = os.environ.get('BEMRS_LLM_BATCH_GENERATION', '1').lower() not in {'0', 'false', 'no'}
         self.llm_max_workers = max(1, int(os.environ.get('BEMRS_LLM_MAX_WORKERS', 6)))
         self.run_output_path = None
@@ -140,7 +145,7 @@ class SearchEngine:
         logging.info('[InitConfig] fixed_slots=%s seed_counts_as_slot=True sequential=True context_recent_evaluated=10 refill=False next=regions', self.init_unique_candidate_target)
         logging.info('[GeneratedAlgorithmBudget] multiplier=%s limit=%s real_eval_target=%s seed_counted=False', self.generated_algorithm_limit_multiplier, self.generated_algorithm_limit, self.real_eval_budget)
         logging.info('[GenerationConfig] llm_batch=%s llm_workers=%s', self.llm_batch_generation_enabled, self.llm_max_workers)
-        logging.info('[BehaviorOperatorConfig] parents=2 intra_BX=reciprocal_rank_farthest inter_BX=distinct_regions_top_priority BR=reciprocal_rank_nearest insufficient_parents=skip rank_probability=(1/rank)/sum(1/rank)')
+        logging.info('[BehaviorOperatorConfig] intra_BX_parents=2 BR_parents=2 inter_BX_parents=cycle_1_to_K intra_BX=reciprocal_rank_farthest inter_BX=cycle_1_to_K_top_priority BR=reciprocal_rank_nearest insufficient_parents=skip rank_probability=(1/rank)/sum(1/rank)')
         logging.info('[RegionConfig] regions=%s archive_target_distinct=%s evaluation_ratio=%s start=initialization_complete rebuild_tolerance=%s', self.region_count, self.region_archive_target_distinct, self.evaluation_ratio, self.region_rebuild_tolerance)
         logging.info('[CandidateFilterConfig] code_dedupe=enabled already_evaluated_filter=enabled behavior_dedupe=removed parent_pool_order=true_score parent_pool_dedupe=(code,score)')
         logging.info('[RegionOperatorConfig] policy=mixed_parent_coverage kinds=intra_bx,intra_br,inter_bx dedupe=operator_and_unordered_codes')
@@ -1876,8 +1881,15 @@ class SearchEngine:
             return None
         return tuple(sorted(code_keys))
 
-    def _register_parent_batch(self, parents):
-        if len(parents or []) != _BEHAVIOR_PARENT_COUNT:
+    def _register_parent_batch(self, parents, expected_count=_BEHAVIOR_PARENT_COUNT):
+        """Register one unordered, distinct-code parent set.
+
+        Region-local BX/BR and archive fallback retain the strict two-parent
+        default.  Cross-region BX passes its scheduled 1..K count explicitly
+        so the shared unordered-code dedupe remains in effect without
+        weakening the other parent builders.
+        """
+        if len(parents or []) != int(expected_count):
             return False
         signature = self._parent_batch_signature(parents)
         if signature is None or signature in self._active_parent_batch_signatures:
@@ -2057,12 +2069,20 @@ class SearchEngine:
         return pools
 
     def _build_inter_region_bx_parent_batches(self, pop, batch_size, pools=None, quotas=None):
-        """Build two-parent BX pairs from two distinct behavior regions.
+        """Build cross-region BX batches with a persistent 1..K parent cycle.
 
         The scheduled region owns each generation slot and supplies parent 1.
-        Parent 2 is taken from another region, prioritizing its top observed
-        objective, then lower-ranked entries when a pair is already used.
-        Exhausted partner regions are skipped before trying the next region.
+        Let K be the number of currently non-empty region parent pools.  The
+        requested parent count is ``1 + cursor % K``; at count one the BX
+        prompt receives only the owning region's elite anchor.  For larger
+        counts, other regions are ordered by their current Top-1 true
+        objective and contribute their Top-1 entries first.  Lower-ranked
+        entries are used only when a set would repeat an already registered
+        unordered code combination.
+
+        This is deliberately scoped to cross-region BX.  Region-local BX,
+        BR, and archive fallback continue to use the strict two-parent
+        registrar and reciprocal distance-rank probability.
         """
         pools = self._region_parent_pools(pop) if pools is None else pools
         if not pools:
@@ -2073,7 +2093,7 @@ class SearchEngine:
                 continue
             ranked_entries[int(region_id)] = sorted(entries, key=lambda entry: (self._safe_objective(entry['parent'].get('objective')), self._canonical_code(entry['parent'].get('code'))))
         all_region_ids = sorted(ranked_entries)
-        if len(all_region_ids) < _BEHAVIOR_PARENT_COUNT:
+        if not all_region_ids:
             return []
         scheduled_region_ids = self._scheduled_region_ids('bx') if quotas is None else set(quotas)
         anchor_region_ids = [region_id for region_id in all_region_ids if scheduled_region_ids is None or region_id in scheduled_region_ids]
@@ -2087,32 +2107,65 @@ class SearchEngine:
         attempts = 0
         max_attempts = max(batch_size * 32, 64)
         region_cursor = 0
+        parent_cursor = int(getattr(self, '_bx_inter_region_parent_count_cursor', 0))
+        cursor_start = parent_cursor
+        active_region_count = len(all_region_ids)
         while len(rows) < batch_size and attempts < max_attempts:
             active_anchor_ids = [region_id for region_id in anchor_region_ids if accepted_by_region[region_id] < target_quotas.get(region_id, 0)]
             if not active_anchor_ids:
                 break
-            anchor_region_id = active_anchor_ids[region_cursor % len(active_anchor_ids)]
+            parent_cycle = parent_cursor // active_region_count
+            anchor_region_id = active_anchor_ids[(region_cursor + parent_cycle) % len(active_anchor_ids)]
             region_cursor += 1
+            requested_parent_count = 1 + parent_cursor % active_region_count
+            parent_cursor += 1
             other_region_ids = sorted((region_id for region_id in all_region_ids if region_id != anchor_region_id), key=lambda region_id: (self._safe_objective(ranked_entries[region_id][0]['parent'].get('objective')), region_id))
+            selected_region_ids = [anchor_region_id] + other_region_ids[:requested_parent_count - 1]
             selected_entries = None
-            anchor_entry = ranked_entries[anchor_region_id][0]
-            for partner_region_id in other_region_ids:
-                for partner_entry in ranked_entries[partner_region_id]:
-                    candidate_entries = [anchor_entry, partner_entry]
-                    parents = [entry['parent'] for entry in candidate_entries]
-                    if self._register_parent_batch(parents):
-                        selected_entries = candidate_entries
+            replaceable_slots = list(range(1, len(selected_region_ids)))
+            max_depth = max((len(ranked_entries[selected_region_ids[slot]]) for slot in replaceable_slots), default=1)
+            max_variants = 1 + len(replaceable_slots) * max_depth
+            for variant in range(max_variants):
+                candidate_entries = []
+                valid_variant = True
+                changed_slot = None
+                changed_depth = 0
+                if variant > 0 and replaceable_slots:
+                    changed_slot = replaceable_slots[(variant - 1) % len(replaceable_slots)]
+                    changed_depth = 1 + (variant - 1) // len(replaceable_slots)
+                for slot, region_id in enumerate(selected_region_ids):
+                    entry_index = changed_depth if slot == changed_slot else 0
+                    entries = ranked_entries[region_id]
+                    if entry_index >= len(entries):
+                        valid_variant = False
                         break
-                if selected_entries is not None:
+                    candidate_entries.append(entries[entry_index])
+                if not valid_variant:
+                    continue
+                parents = [entry['parent'] for entry in candidate_entries]
+                keys = [self._canonical_code(parent.get('code')) for parent in parents]
+                if any(not key for key in keys) or len(set(keys)) != len(keys):
+                    continue
+                if self._register_parent_batch(parents, expected_count=len(parents)):
+                    selected_entries = candidate_entries
                     break
             attempts += 1
             if selected_entries is None:
                 continue
             accepted_by_region[anchor_region_id] += 1
-            rows.append({'region_id': int(anchor_region_id), 'parents': [entry['parent'] for entry in selected_entries], 'requested_parent_count': _BEHAVIOR_PARENT_COUNT, 'actual_parent_count': _BEHAVIOR_PARENT_COUNT, 'operator_schedule': self._region_operator_metadata(anchor_region_id, operator='bx')})
+            rows.append({'region_id': int(anchor_region_id),
+                         'parents': [entry['parent'] for entry in selected_entries],
+                         'requested_parent_count': int(requested_parent_count),
+                         'actual_parent_count': int(len(selected_entries)),
+                         'operator_schedule': self._region_operator_metadata(anchor_region_id, operator='bx')})
+        self._bx_inter_region_parent_count_cursor = parent_cursor
         if len(rows) < batch_size:
             logging.warning('[RegionParents] only %s/%s non-repeating parent sets available for operator=bx', len(rows), batch_size)
-        logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=top_parent_priority parent_source=advantage_archive', len(rows), target_quotas, {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids}, {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})})
+        logging.info('[RegionParents] operator=bx generated_parent_batches=%s planned_quotas=%s allocations=%s parent_count_histogram=%s selection=legacy_cross_top_priority_cycle_1_to_K parent_source=advantage_archive K_active=%s cursor_start=%s cursor_end=%s',
+                     len(rows), target_quotas,
+                     {region_id: sum((row['region_id'] == region_id for row in rows)) for region_id in anchor_region_ids},
+                     {count: sum((row['actual_parent_count'] == count for row in rows)) for count in sorted({row['actual_parent_count'] for row in rows})},
+                     active_region_count, cursor_start, parent_cursor)
         return rows
 
     def _build_region_parent_batches(self, pop, operator, batch_size, pools=None, quotas=None):
